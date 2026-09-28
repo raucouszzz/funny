@@ -36,6 +36,12 @@ _G.FriendColor = Color3.fromRGB(160, 90, 255)
 _G.EnemyColor = Color3.fromRGB(255, 60, 60)
 _G.EntityColor = Color3.fromRGB(255, 170, 0)
 _G.UseTeamColor = true
+_G.PlayerColor = nil                        -- nil = original behaviour (team / friend / enemy colour)
+_G.ItemColor = Color3.fromRGB(0, 255, 200)  -- original item colour
+_G.ESPNameTextSize = 14
+_G.ESPItemTextSize = 13
+_G.ESPFillOpacity = 0.5                     -- original Highlight fill (transparency 0.5)
+_G.ESPOutlineOpacity = 1                    -- original Highlight outline (transparency 0)
 
 local WalkSpeedEnabled = false
 local CustomWalkSpeed = 32
@@ -75,6 +81,12 @@ local autoTpEnabled = false
 local ctrlTpEnabled = false
 
 local toggleUiUpdaters = {}
+
+local KeybindListening = false
+local AutoTpKey = nil
+local FullbrightKey = nil
+local MasterESPKey = nil
+local FirstPersonKey = Enum.KeyCode.RightAlt
 
 ----------------------------------------------------
 -- Instant Interact & Infinite Jump
@@ -162,6 +174,10 @@ local function toggleUnlockFirstPerson(state)
             end
         end)
     end
+
+    if toggleUiUpdaters["Unlock First Person"] then
+        toggleUiUpdaters["Unlock First Person"](state)
+    end
 end
 
 ----------------------------------------------------
@@ -193,6 +209,9 @@ local function toggleFullbright(state)
         LightConnections = {}
         Lighting.Ambient = Color3.fromRGB(0, 0, 0)
         Lighting.FogEnd = 100000
+    end
+    if toggleUiUpdaters["Fullbright"] then
+        toggleUiUpdaters["Fullbright"](state)
     end
 end
 
@@ -338,7 +357,6 @@ _G.ESPMaxDistance = _G.ESPMaxDistance or 2000   -- max render distance (studs)
 
 local ESP_REFRESH_RATE = 0.3     -- seconds per refresh (replaces the full Workspace scan every second)
 local MAX_HIGHLIGHTS   = 30      -- Roblox renders about 31 Highlights at once
-local ITEM_COLOR       = Color3.fromRGB(0, 255, 200)
 
 local espRunning   = false
 local espToken     = 0
@@ -459,8 +477,9 @@ local function refreshESP()
     for i, e in ipairs(visible) do
         local color, showName, text
         if e.kind == "Player" then
-            color = _G.UseTeamColor and e.plr.TeamColor.Color
-                or ((player.TeamColor == e.plr.TeamColor) and _G.FriendColor or _G.EnemyColor)
+            color = _G.PlayerColor
+                or (_G.UseTeamColor and e.plr.TeamColor.Color
+                or ((player.TeamColor == e.plr.TeamColor) and _G.FriendColor or _G.EnemyColor))
             showName = _G.ESPShowName
             text = e.plr.Name
         elseif e.kind == "NPC" then
@@ -468,7 +487,7 @@ local function refreshESP()
             showName = _G.ESPShowName
             text = string.format("%s | HP: %d", e.target.Name, e.hum.MaxHealth > 0 and math.floor(e.hum.Health) or 0)
         else
-            color = ITEM_COLOR
+            color = _G.ItemColor
             showName = _G.ESPShowItemName
             text = e.target.Name
         end
@@ -476,11 +495,19 @@ local function refreshESP()
         e.hl.Enabled = i <= MAX_HIGHLIGHTS
         e.hl.FillColor = color
         e.hl.OutlineColor = (e.kind == "Item") and Color3.new(1, 1, 1) or color
+        e.hl.FillTransparency = 1 - _G.ESPFillOpacity
+        e.hl.OutlineTransparency = 1 - _G.ESPOutlineOpacity
 
         e.bb.Adornee = e.part
         e.bb.Enabled = showName
         if showName then
             e.label.TextColor3 = color
+            local size = (e.kind == "Item") and _G.ESPItemTextSize or _G.ESPNameTextSize
+            if e.lastSize ~= size then
+                e.lastSize = size
+                e.label.TextSize = size
+                e.bb.Size = UDim2.new(0, 300, 0, size + 8)
+            end
             text = string.format("%s [%dm]", text, math.floor(e.dist))
             if text ~= e.lastText then   -- only write Text when it changed
                 e.label.Text = text
@@ -682,6 +709,8 @@ local function createPage(name)
     page.BorderSizePixel = 0
     page.ScrollBarThickness = 3
     page.ScrollBarImageColor3 = PURPLE_PRIMARY
+    page.AutomaticCanvasSize = Enum.AutomaticSize.Y
+    page.CanvasSize = UDim2.new(0, 0, 0, 0)
     page.Visible = false
     
     local layout = Instance.new("UIListLayout", page)
@@ -724,14 +753,25 @@ end
 local camPage = createPage("Camera")
 local movePage = createPage("Movement")
 local visPage = createPage("Visual")
+local espPage = createPage("ESP")
 local tpPage = createPage("Teleport")
 local sysPage = createPage("Checks")
+local configPage = createPage("Config")
 
 addTabButton("Camera")
 addTabButton("Movement")
 addTabButton("Visual")
+addTabButton("ESP")
 addTabButton("Teleport")
 addTabButton("Checks")
+addTabButton("Config")
+
+-- Config registry: every toggle / input / keybind / hex box registers itself here
+local configEntries = {}
+local function registerConfig(key, getter, setter)
+    configEntries[#configEntries + 1] = { key = key, get = getter, set = setter }
+end
+local loadDefaultConfig = function() end   -- assigned by the Config System section
 
 local function addToggle(parent, title, desc, default, callback)
     local card = Instance.new("Frame", parent)
@@ -792,11 +832,21 @@ local function addToggle(parent, title, desc, default, callback)
     switch.MouseButton1Click:Connect(function()
         setState(not state, false)
     end)
+
+    registerConfig(parent.Name .. "/" .. title,
+        function() return state end,
+        function(v)
+            if type(v) == "boolean" and v ~= state then
+                setState(v, false)
+            end
+        end)
 end
 
-local function addInput(parent, title, desc, defaultVal, callback)
+local function addInput(parent, title, desc, defaultVal, callback, sliderMin, sliderMax, sliderStep)
+    local hasSlider = sliderMin ~= nil and sliderMax ~= nil
+
     local card = Instance.new("Frame", parent)
-    card.Size = UDim2.new(1, -10, 0, 50)
+    card.Size = UDim2.new(1, -10, 0, hasSlider and 68 or 50)
     card.BackgroundColor3 = PURPLE_CARD
     card.BackgroundTransparency = 0.2
     card.BorderSizePixel = 0
@@ -824,18 +874,108 @@ local function addInput(parent, title, desc, defaultVal, callback)
 
     local input = Instance.new("TextBox", card)
     input.Size = UDim2.new(0, 75, 0, 26)
-    input.Position = UDim2.new(1, -85, 0.5, -13)
+    input.Position = UDim2.new(1, -85, 0, 12)
     input.Text = tostring(defaultVal)
     input.Font = Enum.Font.GothamBold
     input.TextSize = 12
     input.TextColor3 = PURPLE_ACCENT
     input.BackgroundColor3 = PURPLE_DARK
+    input.ClearTextOnFocus = false
     Instance.new("UICorner", input).CornerRadius = UDim.new(0, 6)
 
+    local setSliderVisual = function() end
+
+    if hasSlider then
+        local step = sliderStep or 1
+        local range = sliderMax - sliderMin
+
+        local track = Instance.new("Frame", card)
+        track.Position = UDim2.new(0, 14, 0, 54)
+        track.Size = UDim2.new(1, -28, 0, 6)
+        track.BackgroundColor3 = Color3.fromRGB(50, 40, 70)
+        track.BorderSizePixel = 0
+        Instance.new("UICorner", track).CornerRadius = UDim.new(0, 3)
+
+        local fill = Instance.new("Frame", track)
+        fill.Size = UDim2.new(0, 0, 1, 0)
+        fill.BackgroundColor3 = PURPLE_PRIMARY
+        fill.BorderSizePixel = 0
+        Instance.new("UICorner", fill).CornerRadius = UDim.new(0, 3)
+
+        local knob = Instance.new("Frame", track)
+        knob.Size = UDim2.new(0, 14, 0, 14)
+        knob.BackgroundColor3 = TEXT_MAIN
+        knob.BorderSizePixel = 0
+        knob.ZIndex = 2
+        Instance.new("UICorner", knob).CornerRadius = UDim.new(0, 7)
+
+        -- larger invisible hit area so the thin track is easy to grab
+        local hit = Instance.new("TextButton", card)
+        hit.Text = ""
+        hit.AutoButtonColor = false
+        hit.BackgroundTransparency = 1
+        hit.Position = UDim2.new(0, 8, 0, 46)
+        hit.Size = UDim2.new(1, -16, 0, 22)
+        hit.ZIndex = 3
+
+        setSliderVisual = function(v)
+            local alpha = math.clamp((v - sliderMin) / range, 0, 1)
+            fill.Size = UDim2.new(alpha, 0, 1, 0)
+            knob.Position = UDim2.new(alpha, -7, 0.5, -7)
+        end
+        setSliderVisual(tonumber(defaultVal) or sliderMin)
+
+        local function cleanNumber(v)
+            return tonumber(string.format("%.3f", v))
+        end
+
+        local function updateFromX(x)
+            local alpha = math.clamp((x - track.AbsolutePosition.X) / track.AbsoluteSize.X, 0, 1)
+            local v = sliderMin + alpha * range
+            v = math.floor(v / step + 0.5) * step
+            v = cleanNumber(math.clamp(v, sliderMin, sliderMax))
+            input.Text = tostring(v)
+            setSliderVisual(v)
+            callback(v)
+        end
+
+        local dragging = false
+        hit.InputBegan:Connect(function(io)
+            if io.UserInputType == Enum.UserInputType.MouseButton1 or io.UserInputType == Enum.UserInputType.Touch then
+                dragging = true
+                updateFromX(io.Position.X)
+            end
+        end)
+        UserInputService.InputChanged:Connect(function(io)
+            if dragging and (io.UserInputType == Enum.UserInputType.MouseMovement or io.UserInputType == Enum.UserInputType.Touch) then
+                updateFromX(io.Position.X)
+            end
+        end)
+        UserInputService.InputEnded:Connect(function(io)
+            if io.UserInputType == Enum.UserInputType.MouseButton1 or io.UserInputType == Enum.UserInputType.Touch then
+                dragging = false
+            end
+        end)
+    end
+
+    -- Typing a number still works exactly as before (no clamping to the slider range)
     input.FocusLost:Connect(function()
         local val = tonumber(input.Text)
-        if val then callback(val) end
+        if val then
+            setSliderVisual(val)
+            callback(val)
+        end
     end)
+
+    registerConfig(parent.Name .. "/" .. title,
+        function() return tonumber(input.Text) end,
+        function(v)
+            if type(v) == "number" then
+                input.Text = tostring(v)
+                setSliderVisual(v)
+                callback(v)
+            end
+        end)
 end
 
 local function addKeybind(parent, title, desc, defaultKey, callback)
@@ -876,25 +1016,162 @@ local function addKeybind(parent, title, desc, defaultKey, callback)
     bindBtn.BackgroundColor3 = PURPLE_DARK
     Instance.new("UICorner", bindBtn).CornerRadius = UDim.new(0, 6)
 
+    local currentKey = defaultKey
     local listening = false
+
+    local function applyKey(key)
+        currentKey = key
+        bindBtn.Text = key and key.Name or "None"
+        callback(key)
+    end
+
     bindBtn.MouseButton1Click:Connect(function()
         bindBtn.Text = "..."
         listening = true
+        KeybindListening = true
+        -- safety: stop listening after 5s so hotkeys never stay blocked
+        task.delay(5, function()
+            if listening then
+                listening = false
+                KeybindListening = false
+                bindBtn.Text = currentKey and currentKey.Name or "None"
+            end
+        end)
     end)
 
     UserInputService.InputBegan:Connect(function(input)
         if listening and input.UserInputType == Enum.UserInputType.Keyboard then
             listening = false
+            -- release the flag after this input event so hotkeys don't fire while binding
+            task.defer(function() KeybindListening = false end)
             local key = input.KeyCode
             if key == Enum.KeyCode.Backspace or key == Enum.KeyCode.Escape then
-                bindBtn.Text = "None"
-                callback(nil)
+                applyKey(nil)
             else
-                bindBtn.Text = key.Name
-                callback(key)
+                applyKey(key)
             end
         end
     end)
+
+    registerConfig(parent.Name .. "/" .. title,
+        function() return currentKey and currentKey.Name or "None" end,
+        function(v)
+            if v == "None" then
+                applyKey(nil)
+            elseif type(v) == "string" then
+                local ok, key = pcall(function() return Enum.KeyCode[v] end)
+                if ok and key then applyKey(key) end
+            end
+        end)
+end
+
+local function parseHex(str)
+    str = (tostring(str):gsub("%s", ""))
+    str = (str:gsub("^#", ""))
+    if #str == 3 then str = (str:gsub(".", "%0%0")) end
+    if #str ~= 6 or not str:match("^%x+$") then return nil end
+    return Color3.fromRGB(
+        tonumber(str:sub(1, 2), 16),
+        tonumber(str:sub(3, 4), 16),
+        tonumber(str:sub(5, 6), 16)
+    )
+end
+
+local function toHex(c)
+    return string.format("%02X%02X%02X",
+        math.floor(c.R * 255 + 0.5),
+        math.floor(c.G * 255 + 0.5),
+        math.floor(c.B * 255 + 0.5))
+end
+
+-- Empty box -> callback(nil) (caller falls back to the original colour)
+local function addHexInput(parent, title, desc, defaultHex, callback, placeholder)
+    local card = Instance.new("Frame", parent)
+    card.Size = UDim2.new(1, -10, 0, 50)
+    card.BackgroundColor3 = PURPLE_CARD
+    card.BackgroundTransparency = 0.2
+    card.BorderSizePixel = 0
+    Instance.new("UICorner", card).CornerRadius = UDim.new(0, 8)
+
+    local tLabel = Instance.new("TextLabel", card)
+    tLabel.Text = title
+    tLabel.Font = Enum.Font.GothamBold
+    tLabel.TextSize = 13
+    tLabel.TextColor3 = TEXT_MAIN
+    tLabel.Position = UDim2.new(0, 12, 0, 8)
+    tLabel.Size = UDim2.new(0, 260, 0, 16)
+    tLabel.TextXAlignment = Enum.TextXAlignment.Left
+    tLabel.BackgroundTransparency = 1
+
+    local dLabel = Instance.new("TextLabel", card)
+    dLabel.Text = desc
+    dLabel.Font = Enum.Font.Gotham
+    dLabel.TextSize = 10
+    dLabel.TextColor3 = TEXT_SUB
+    dLabel.Position = UDim2.new(0, 12, 0, 26)
+    dLabel.Size = UDim2.new(0, 260, 0, 14)
+    dLabel.TextXAlignment = Enum.TextXAlignment.Left
+    dLabel.BackgroundTransparency = 1
+
+    local preview = Instance.new("Frame", card)
+    preview.Size = UDim2.new(0, 18, 0, 18)
+    preview.Position = UDim2.new(1, -113, 0, 16)
+    preview.BorderSizePixel = 0
+    Instance.new("UICorner", preview).CornerRadius = UDim.new(0, 4)
+    local pvStroke = Instance.new("UIStroke", preview)
+    pvStroke.Color = PURPLE_PRIMARY
+    pvStroke.Thickness = 1
+
+    local input = Instance.new("TextBox", card)
+    input.Size = UDim2.new(0, 75, 0, 26)
+    input.Position = UDim2.new(1, -85, 0, 12)
+    input.Text = defaultHex or ""
+    input.PlaceholderText = placeholder or "RRGGBB"
+    input.PlaceholderColor3 = TEXT_SUB
+    input.ClearTextOnFocus = false
+    input.Font = Enum.Font.GothamBold
+    input.TextSize = 12
+    input.TextColor3 = PURPLE_ACCENT
+    input.BackgroundColor3 = PURPLE_DARK
+    Instance.new("UICorner", input).CornerRadius = UDim.new(0, 6)
+
+    local lastText = input.Text
+    local function setPreview(color)
+        preview.BackgroundColor3 = color or PURPLE_DARK
+        preview.BackgroundTransparency = color and 0 or 0.5
+    end
+    setPreview(parseHex(lastText))
+
+    local function commit()
+        local trimmed = (input.Text:gsub("%s", ""))
+        if trimmed == "" then
+            input.Text = ""
+            lastText = ""
+            setPreview(nil)
+            callback(nil)
+            return
+        end
+        local color = parseHex(trimmed)
+        if color then
+            input.Text = toHex(color)
+            lastText = input.Text
+            setPreview(color)
+            callback(color)
+        else
+            input.Text = lastText   -- invalid HEX: revert
+        end
+    end
+
+    input.FocusLost:Connect(commit)
+
+    registerConfig(parent.Name .. "/" .. title,
+        function() return input.Text end,
+        function(v)
+            if type(v) == "string" then
+                input.Text = v
+                commit()
+            end
+        end)
 end
 
 local function addButton(parent, title, callback)
@@ -915,32 +1192,65 @@ local function addButton(parent, title, callback)
 end
 
 ----------------------------------------------------
+-- Hotkey-friendly toggle helpers (keep the UI switch in sync)
+----------------------------------------------------
+local function setAutoTeleport(state)
+    autoTpEnabled = state
+    if toggleUiUpdaters["Auto Teleport"] then
+        toggleUiUpdaters["Auto Teleport"](state)
+    end
+end
+
+local function setMasterESP(state)
+    _G.ESPEnabled = state
+    updateESPState()
+    if toggleUiUpdaters["Master ESP"] then
+        toggleUiUpdaters["Master ESP"](state)
+    end
+end
+
+----------------------------------------------------
 -- Features Registration
 ----------------------------------------------------
 addToggle(camPage, "Unlock Camera", "Unlock camera distance limits", false, function(s) UnlockCameraEnabled = s end)
-addInput(camPage, "Camera Distance", "Max camera zoom distance", CameraMaxDistance, function(v) CameraMaxDistance = v end)
+addInput(camPage, "Camera Distance", "Max camera zoom distance", CameraMaxDistance, function(v) CameraMaxDistance = v end, 10, 5000, 10)
 addToggle(camPage, "Unlock First Person", "Unlock first person, shiftlock and zoom", false, function(s) toggleUnlockFirstPerson(s) end)
+addKeybind(camPage, "Unlock First Person Keybind", "Press key to toggle Unlock First Person", Enum.KeyCode.RightAlt, function(k) FirstPersonKey = k end)
 
 addToggle(movePage, "Infinite Jump", "Jump infinitely in the air", false, function(s) InfiniteJumpEnabled = s end)
 addToggle(movePage, "Enable WalkSpeed", "Apply custom WalkSpeed", false, function(s) WalkSpeedEnabled = s; updateMovement() end)
-addInput(movePage, "WalkSpeed Value", "Set WalkSpeed amount", CustomWalkSpeed, function(v) CustomWalkSpeed = v; updateMovement() end)
+addInput(movePage, "WalkSpeed Value", "Set WalkSpeed amount", CustomWalkSpeed, function(v) CustomWalkSpeed = v; updateMovement() end, 0, 500, 1)
 addToggle(movePage, "CFrame Walk", "Walk using CFrame (Bypasses movement checks)", false, function(s) toggleCFrameWalk(s) end)
 addToggle(movePage, "Enable JumpPower", "Apply custom JumpPower", false, function(s) JumpPowerEnabled = s; updateMovement() end)
-addInput(movePage, "JumpPower Value", "Set JumpPower amount", CustomJumpPower, function(v) CustomJumpPower = v; updateMovement() end)
+addInput(movePage, "JumpPower Value", "Set JumpPower amount", CustomJumpPower, function(v) CustomJumpPower = v; updateMovement() end, 0, 500, 1)
 
 addToggle(visPage, "Instant Interact", "Bypass proximity prompt hold time", false, function(s) InstantInteractEnabled = s end)
 addToggle(visPage, "Fullbright", "Remove dark fog and shadows", false, function(s) toggleFullbright(s) end)
-addInput(visPage, "Light Intensity", "Adjust brightness level", LightIntensity, function(v) LightIntensity = v; if FullbrightEnabled then applyFullbright() end end)
+addKeybind(visPage, "Fullbright Keybind", "Press key to toggle Fullbright", nil, function(k) FullbrightKey = k end)
+addInput(visPage, "Light Intensity", "Adjust brightness level", LightIntensity, function(v) LightIntensity = v; if FullbrightEnabled then applyFullbright() end end, 0, 1, 0.05)
 
-addToggle(visPage, "Master ESP", "Enable players, entities and items highlights", false, function(s) _G.ESPEnabled = s; updateESPState() end)
-addInput(visPage, "ESP Max Distance", "Max ESP render distance (studs)", _G.ESPMaxDistance, function(v) _G.ESPMaxDistance = v; updateESPState() end)
-addToggle(visPage, "Show Names & HP", "Show name and HP tag on entities", true, function(s) _G.ESPShowName = s; updateESPState() end)
-addToggle(visPage, "Show Item Names", "Show name tags on items/interactables", true, function(s) _G.ESPShowItemName = s; updateESPState() end)
-addToggle(visPage, "Ignore Players", "Do not highlight real players", false, function(s) _G.ESPIgnorePlayers = s; updateESPState() end)
-addToggle(visPage, "Ignore Entities", "Do not highlight NPCs/Ghosts", false, function(s) _G.ESPIgnoreNPCs = s; updateESPState() end)
-addToggle(visPage, "Ignore Items", "Do not highlight items/interactables", false, function(s) _G.ESPIgnoreItems = s; updateESPState() end)
+addToggle(espPage, "Master ESP", "Enable players, entities and items highlights", false, function(s) setMasterESP(s) end)
+addKeybind(espPage, "Master ESP Keybind", "Press key to toggle Master ESP", nil, function(k) MasterESPKey = k end)
+addInput(espPage, "ESP Max Distance", "Max ESP render distance (studs)", _G.ESPMaxDistance, function(v) _G.ESPMaxDistance = v end, 50, 10000, 50)
 
-addToggle(tpPage, "Auto Teleport", "Loop teleport to saved position", false, function(s) autoTpEnabled = s end)
+addToggle(espPage, "Show Names & HP", "Show name, HP and distance tag on players/entities", true, function(s) _G.ESPShowName = s; updateESPState() end)
+addInput(espPage, "Names & HP Text Size", "Text size of player/entity tags", _G.ESPNameTextSize, function(v) _G.ESPNameTextSize = math.clamp(v, 1, 100) end, 8, 32, 1)
+addToggle(espPage, "Show Item Names", "Show name and distance tag on items/interactables", true, function(s) _G.ESPShowItemName = s; updateESPState() end)
+addInput(espPage, "Item Names Text Size", "Text size of item tags", _G.ESPItemTextSize, function(v) _G.ESPItemTextSize = math.clamp(v, 1, 100) end, 8, 32, 1)
+
+addToggle(espPage, "Ignore Players", "Do not highlight real players", false, function(s) _G.ESPIgnorePlayers = s; updateESPState() end)
+addToggle(espPage, "Ignore Entities", "Do not highlight NPCs/Ghosts", false, function(s) _G.ESPIgnoreNPCs = s; updateESPState() end)
+addToggle(espPage, "Ignore Items", "Do not highlight items/interactables", false, function(s) _G.ESPIgnoreItems = s; updateESPState() end)
+
+addHexInput(espPage, "Players Color (HEX)", "Empty = original team color. Also colors the tag", "", function(c) _G.PlayerColor = c; updateESPState() end, "TEAM")
+addHexInput(espPage, "Entities Color (HEX)", "Empty = original color. Also colors the tag", toHex(_G.EntityColor), function(c) _G.EntityColor = c or Color3.fromRGB(255, 170, 0); updateESPState() end, "FFAA00")
+addHexInput(espPage, "Items Color (HEX)", "Empty = original color. Also colors the tag", toHex(_G.ItemColor), function(c) _G.ItemColor = c or Color3.fromRGB(0, 255, 200); updateESPState() end, "00FFC8")
+
+addInput(espPage, "ESP Fill Opacity", "Highlight fill (0 = clear, 1 = solid)", _G.ESPFillOpacity, function(v) _G.ESPFillOpacity = math.clamp(v, 0, 1) end, 0, 1, 0.05)
+addInput(espPage, "ESP Outline Opacity", "Highlight outline (0 = clear, 1 = solid)", _G.ESPOutlineOpacity, function(v) _G.ESPOutlineOpacity = math.clamp(v, 0, 1) end, 0, 1, 0.05)
+
+addToggle(tpPage, "Auto Teleport", "Loop teleport to saved position", false, function(s) setAutoTeleport(s) end)
+addKeybind(tpPage, "Auto Teleport Keybind", "Press key to toggle Auto Teleport", nil, function(k) AutoTpKey = k end)
 addToggle(tpPage, "Ctrl + Click TP", "Teleport to mouse click location", false, function(s) ctrlTpEnabled = s end)
 addButton(tpPage, "Save Current Position", function()
     if player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
@@ -1033,7 +1343,401 @@ addToggle(sysPage, "Enable Flight", "Fly freely across map", false, function(s)
     toggleFlight(s) 
 end)
 addKeybind(sysPage, "Flight Keybind", "Press key to toggle Flight", nil, function(k) FlightKey = k end)
-addInput(sysPage, "Fly Speed", "Speed of flight movement", FlySpeed, function(v) FlySpeed = v end)
+addInput(sysPage, "Fly Speed", "Speed of flight movement", FlySpeed, function(v) FlySpeed = v end, 1, 500, 1)
+
+----------------------------------------------------
+-- 8. Config System (Save / Overwrite / Load / Set Default)
+----------------------------------------------------
+do
+    local HttpService = game:GetService("HttpService")
+
+    local CONFIG_DIR = "CheckSystem"
+    local CONFIG_FOLDER = CONFIG_DIR .. "/Configs"
+    local DEFAULT_FILE = CONFIG_DIR .. "/default.txt"
+
+    local hasFS = (writefile and readfile and isfile and isfolder and makefolder and listfiles) ~= nil
+    local memConfigs, memDefault = {}, nil   -- fallback when the executor has no file access
+
+    local selected = nil
+
+    ------------------------------------------------
+    -- Storage
+    ------------------------------------------------
+    local function ensureFolders()
+        if not hasFS then return end
+        pcall(function()
+            if not isfolder(CONFIG_DIR) then makefolder(CONFIG_DIR) end
+            if not isfolder(CONFIG_FOLDER) then makefolder(CONFIG_FOLDER) end
+        end)
+    end
+
+    local function sanitizeName(n)
+        n = tostring(n or "")
+        n = n:gsub("[^%w%s_%-]", "")
+        n = n:gsub("^%s+", "")
+        n = n:gsub("%s+$", "")
+        return n:sub(1, 32)
+    end
+
+    local function configPath(name)
+        return CONFIG_FOLDER .. "/" .. name .. ".json"
+    end
+
+    local function configExists(name)
+        if hasFS then
+            local ok, res = pcall(isfile, configPath(name))
+            return ok and res == true
+        end
+        return memConfigs[name] ~= nil
+    end
+
+    local function listConfigs()
+        local names = {}
+        if hasFS then
+            ensureFolders()
+            local ok, files = pcall(listfiles, CONFIG_FOLDER)
+            if ok and type(files) == "table" then
+                for _, f in ipairs(files) do
+                    local n = tostring(f):match("([^/\\]+)%.json$")
+                    if n then names[#names + 1] = n end
+                end
+            end
+        else
+            for n in pairs(memConfigs) do names[#names + 1] = n end
+        end
+        table.sort(names, function(a, b) return a:lower() < b:lower() end)
+        return names
+    end
+
+    local function writeConfig(name, data)
+        local okEnc, json = pcall(function() return HttpService:JSONEncode(data) end)
+        if not okEnc then return false, "Could not encode settings" end
+        if hasFS then
+            ensureFolders()
+            local ok, err = pcall(writefile, configPath(name), json)
+            return ok, err
+        end
+        memConfigs[name] = json
+        return true
+    end
+
+    local function readConfig(name)
+        local raw
+        if hasFS then
+            local ok, res = pcall(readfile, configPath(name))
+            if not ok then return nil, "Could not read the config file" end
+            raw = res
+        else
+            raw = memConfigs[name]
+        end
+        if not raw then return nil, "Config not found" end
+        local ok, data = pcall(function() return HttpService:JSONDecode(raw) end)
+        if not ok or type(data) ~= "table" then return nil, "Config file is corrupted" end
+        return data
+    end
+
+    local function getDefault()
+        if hasFS then
+            local ok, name = pcall(function()
+                if isfile(DEFAULT_FILE) then return readfile(DEFAULT_FILE) end
+                return nil
+            end)
+            if ok and type(name) == "string" then
+                name = sanitizeName(name)
+                if name ~= "" and configExists(name) then return name end
+            end
+            return nil
+        end
+        if memDefault and configExists(memDefault) then return memDefault end
+        return nil
+    end
+
+    local function setDefault(name)
+        if hasFS then
+            ensureFolders()
+            local ok, err = pcall(writefile, DEFAULT_FILE, name)
+            return ok, err
+        end
+        memDefault = name
+        return true
+    end
+
+    ------------------------------------------------
+    -- Collect / apply settings
+    ------------------------------------------------
+    local function collectSettings()
+        local values = {}
+        for _, e in ipairs(configEntries) do
+            local ok, v = pcall(e.get)
+            if ok and v ~= nil then values[e.key] = v end
+        end
+        return { version = 1, values = values }
+    end
+
+    local function applySettings(data)
+        local values = data and data.values
+        if type(values) ~= "table" then return false end
+        for _, e in ipairs(configEntries) do
+            local v = values[e.key]
+            if v ~= nil then
+                local ok, err = pcall(e.set, v)
+                if not ok then
+                    warn("[Check System] Failed to apply '" .. e.key .. "': " .. tostring(err))
+                end
+            end
+        end
+        return true
+    end
+
+    ------------------------------------------------
+    -- UI
+    ------------------------------------------------
+    local function makeCard(height)
+        local card = Instance.new("Frame", configPage)
+        card.Size = UDim2.new(1, -10, 0, height)
+        card.BackgroundColor3 = PURPLE_CARD
+        card.BackgroundTransparency = 0.2
+        card.BorderSizePixel = 0
+        Instance.new("UICorner", card).CornerRadius = UDim.new(0, 8)
+        return card
+    end
+
+    -- Config name box
+    local nameCard = makeCard(50)
+    local nameTitle = Instance.new("TextLabel", nameCard)
+    nameTitle.Text = "Config Name"
+    nameTitle.Font = Enum.Font.GothamBold
+    nameTitle.TextSize = 13
+    nameTitle.TextColor3 = TEXT_MAIN
+    nameTitle.Position = UDim2.new(0, 12, 0, 8)
+    nameTitle.Size = UDim2.new(0, 200, 0, 16)
+    nameTitle.TextXAlignment = Enum.TextXAlignment.Left
+    nameTitle.BackgroundTransparency = 1
+
+    local nameDesc = Instance.new("TextLabel", nameCard)
+    nameDesc.Text = "Name used by Save Config (new config)"
+    nameDesc.Font = Enum.Font.Gotham
+    nameDesc.TextSize = 10
+    nameDesc.TextColor3 = TEXT_SUB
+    nameDesc.Position = UDim2.new(0, 12, 0, 26)
+    nameDesc.Size = UDim2.new(0, 200, 0, 14)
+    nameDesc.TextXAlignment = Enum.TextXAlignment.Left
+    nameDesc.BackgroundTransparency = 1
+
+    local nameBox = Instance.new("TextBox", nameCard)
+    nameBox.Size = UDim2.new(0, 180, 0, 26)
+    nameBox.Position = UDim2.new(1, -190, 0, 12)
+    nameBox.Text = ""
+    nameBox.PlaceholderText = "My Config"
+    nameBox.PlaceholderColor3 = TEXT_SUB
+    nameBox.ClearTextOnFocus = false
+    nameBox.Font = Enum.Font.GothamBold
+    nameBox.TextSize = 12
+    nameBox.TextColor3 = PURPLE_ACCENT
+    nameBox.BackgroundColor3 = PURPLE_DARK
+    Instance.new("UICorner", nameBox).CornerRadius = UDim.new(0, 6)
+
+    -- Config list
+    local listCard = makeCard(160)
+    local listTitle = Instance.new("TextLabel", listCard)
+    listTitle.Text = "Select Config"
+    listTitle.Font = Enum.Font.GothamBold
+    listTitle.TextSize = 13
+    listTitle.TextColor3 = TEXT_MAIN
+    listTitle.Position = UDim2.new(0, 12, 0, 8)
+    listTitle.Size = UDim2.new(0, 200, 0, 16)
+    listTitle.TextXAlignment = Enum.TextXAlignment.Left
+    listTitle.BackgroundTransparency = 1
+
+    local refreshListBtn = Instance.new("TextButton", listCard)
+    refreshListBtn.Text = "Refresh"
+    refreshListBtn.Font = Enum.Font.GothamBold
+    refreshListBtn.TextSize = 11
+    refreshListBtn.TextColor3 = PURPLE_ACCENT
+    refreshListBtn.BackgroundColor3 = PURPLE_DARK
+    refreshListBtn.Size = UDim2.new(0, 64, 0, 22)
+    refreshListBtn.Position = UDim2.new(1, -74, 0, 6)
+    Instance.new("UICorner", refreshListBtn).CornerRadius = UDim.new(0, 6)
+
+    local listScroll = Instance.new("ScrollingFrame", listCard)
+    listScroll.Position = UDim2.new(0, 8, 0, 34)
+    listScroll.Size = UDim2.new(1, -16, 1, -42)
+    listScroll.BackgroundColor3 = PURPLE_DARK
+    listScroll.BackgroundTransparency = 0.3
+    listScroll.BorderSizePixel = 0
+    listScroll.ScrollBarThickness = 3
+    listScroll.ScrollBarImageColor3 = PURPLE_PRIMARY
+    listScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+    listScroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+    Instance.new("UICorner", listScroll).CornerRadius = UDim.new(0, 6)
+    local listLayout = Instance.new("UIListLayout", listScroll)
+    listLayout.Padding = UDim.new(0, 4)
+    local listPad = Instance.new("UIPadding", listScroll)
+    listPad.PaddingTop = UDim.new(0, 4)
+    listPad.PaddingLeft = UDim.new(0, 4)
+    listPad.PaddingRight = UDim.new(0, 4)
+    listPad.PaddingBottom = UDim.new(0, 4)
+
+    -- Status
+    local statusCard = makeCard(52)
+    local statusLine = Instance.new("TextLabel", statusCard)
+    statusLine.Font = Enum.Font.GothamBold
+    statusLine.TextSize = 12
+    statusLine.TextColor3 = TEXT_MAIN
+    statusLine.Position = UDim2.new(0, 12, 0, 6)
+    statusLine.Size = UDim2.new(1, -24, 0, 18)
+    statusLine.TextXAlignment = Enum.TextXAlignment.Left
+    statusLine.BackgroundTransparency = 1
+
+    local messageLine = Instance.new("TextLabel", statusCard)
+    messageLine.Font = Enum.Font.Gotham
+    messageLine.TextSize = 11
+    messageLine.TextColor3 = TEXT_SUB
+    messageLine.Position = UDim2.new(0, 12, 0, 26)
+    messageLine.Size = UDim2.new(1, -24, 0, 22)
+    messageLine.TextXAlignment = Enum.TextXAlignment.Left
+    messageLine.TextYAlignment = Enum.TextYAlignment.Top
+    messageLine.TextWrapped = true
+    messageLine.BackgroundTransparency = 1
+    messageLine.Text = hasFS
+        and ("Saving to executor workspace: " .. CONFIG_FOLDER)
+        or "No file access in this executor: configs last only until you leave the game."
+
+    local function say(text)
+        messageLine.Text = text
+        pcall(function()
+            StarterGui:SetCore("SendNotification", { Title = "Config", Text = text, Duration = 3 })
+        end)
+    end
+
+    local function updateStatus()
+        statusLine.Text = "Selected: " .. (selected or "none") .. "   |   Default: " .. (getDefault() or "none")
+    end
+
+    local function rebuildList()
+        for _, c in ipairs(listScroll:GetChildren()) do
+            if not c:IsA("UIListLayout") and not c:IsA("UIPadding") then c:Destroy() end
+        end
+
+        local names = listConfigs()
+        local default = getDefault()
+        local found = false
+
+        for _, name in ipairs(names) do
+            if name == selected then found = true end
+            local btn = Instance.new("TextButton", listScroll)
+            btn.Size = UDim2.new(1, 0, 0, 26)
+            btn.Text = "  " .. name .. (name == default and "   [DEFAULT]" or "")
+            btn.Font = Enum.Font.GothamBold
+            btn.TextSize = 12
+            btn.TextXAlignment = Enum.TextXAlignment.Left
+            btn.TextColor3 = (name == selected) and TEXT_MAIN or TEXT_SUB
+            btn.BackgroundColor3 = (name == selected) and PURPLE_PRIMARY or PURPLE_CARD
+            Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 5)
+            btn.MouseButton1Click:Connect(function()
+                selected = name
+                rebuildList()
+            end)
+        end
+
+        if not found then selected = nil end
+
+        if #names == 0 then
+            local empty = Instance.new("TextLabel", listScroll)
+            empty.Size = UDim2.new(1, 0, 0, 26)
+            empty.BackgroundTransparency = 1
+            empty.Font = Enum.Font.Gotham
+            empty.TextSize = 11
+            empty.TextColor3 = TEXT_SUB
+            empty.Text = "No configs saved yet"
+        end
+
+        updateStatus()
+    end
+
+    refreshListBtn.MouseButton1Click:Connect(rebuildList)
+
+    ------------------------------------------------
+    -- Actions
+    ------------------------------------------------
+    addButton(configPage, "Save Config", function()
+        local name = sanitizeName(nameBox.Text)
+        if name == "" then
+            say("Type a config name first.")
+            return
+        end
+        if configExists(name) then
+            say('"' .. name .. '" already exists. Select it in the list and use Overwrite Config.')
+            return
+        end
+        local ok, err = writeConfig(name, collectSettings())
+        if ok then
+            selected = name
+            rebuildList()
+            say('Saved config "' .. name .. '".')
+        else
+            say("Save failed: " .. tostring(err))
+        end
+    end)
+
+    addButton(configPage, "Overwrite Config", function()
+        if not selected then
+            say("Select a config in the list first.")
+            return
+        end
+        local ok, err = writeConfig(selected, collectSettings())
+        if ok then
+            say('Overwrote config "' .. selected .. '".')
+        else
+            say("Overwrite failed: " .. tostring(err))
+        end
+    end)
+
+    addButton(configPage, "Load Config", function()
+        if not selected then
+            say("Select a config in the list first.")
+            return
+        end
+        local data, err = readConfig(selected)
+        if not data then
+            say("Load failed: " .. tostring(err))
+            return
+        end
+        if applySettings(data) then
+            say('Loaded config "' .. selected .. '".')
+        else
+            say("Load failed: invalid config data.")
+        end
+    end)
+
+    addButton(configPage, "Set Default Config", function()
+        if not selected then
+            say("Select a config in the list first.")
+            return
+        end
+        local ok, err = setDefault(selected)
+        if ok then
+            rebuildList()
+            say('"' .. selected .. '" will load automatically when the script runs.')
+        else
+            say("Could not set default: " .. tostring(err))
+        end
+    end)
+
+    rebuildList()
+
+    -- called once at the very end of the script
+    loadDefaultConfig = function()
+        local default = getDefault()
+        if not default then return end
+        local data = readConfig(default)
+        if data and applySettings(data) then
+            selected = default
+            rebuildList()
+            say('Auto-loaded default config "' .. default .. '".')
+        end
+    end
+end
 
 ----------------------------------------------------
 -- Character Initialization & Key Bindings
@@ -1063,6 +1767,8 @@ end
 UserInputService.InputBegan:Connect(function(input, gpe)
     if gpe then return end
     
+    if KeybindListening then return end   -- currently binding a key
+
     if input.KeyCode == Enum.KeyCode.RightShift then
         toggleGuiVisibility()
     end
@@ -1074,8 +1780,23 @@ UserInputService.InputBegan:Connect(function(input, gpe)
         if FlightKey and input.KeyCode == FlightKey then
             toggleFlight(not FlightState)
         end
+        if AutoTpKey and input.KeyCode == AutoTpKey then
+            setAutoTeleport(not autoTpEnabled)
+        end
+        if FullbrightKey and input.KeyCode == FullbrightKey then
+            toggleFullbright(not FullbrightEnabled)
+        end
+        if MasterESPKey and input.KeyCode == MasterESPKey then
+            setMasterESP(not _G.ESPEnabled)
+        end
+        if FirstPersonKey and input.KeyCode == FirstPersonKey then
+            toggleUnlockFirstPerson(not UnlockFirstPersonEnabled)
+        end
     end
 end)
+
+-- Load the default config last, after the character has been set up
+loadDefaultConfig()
 
 StarterGui:SetCore("SendNotification", {
     Title = "Check System",
