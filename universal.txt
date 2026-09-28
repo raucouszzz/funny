@@ -873,12 +873,12 @@ addToggle(visPage, "Fullbright", "Remove dark fog and shadows", false, function(
 addInput(visPage, "Light Intensity", "Adjust brightness level", LightIntensity, function(v) LightIntensity = v; if FullbrightEnabled then applyFullbright() end end)
 
 addToggle(visPage, "Master ESP", "Enable players, entities and items highlights", false, function(s) _G.ESPEnabled = s; updateESPState() end)
+addInput(visPage, "ESP Max Distance", "Max ESP render distance (studs)", _G.ESPMaxDistance, function(v) _G.ESPMaxDistance = v; updateESPState() end)
 addToggle(visPage, "Show Names & HP", "Show name and HP tag on entities", true, function(s) _G.ESPShowName = s; updateESPState() end)
 addToggle(visPage, "Show Item Names", "Show name tags on items/interactables", true, function(s) _G.ESPShowItemName = s; updateESPState() end)
 addToggle(visPage, "Ignore Players", "Do not highlight real players", false, function(s) _G.ESPIgnorePlayers = s; updateESPState() end)
 addToggle(visPage, "Ignore Entities", "Do not highlight NPCs/Ghosts", false, function(s) _G.ESPIgnoreNPCs = s; updateESPState() end)
 addToggle(visPage, "Ignore Items", "Do not highlight items/interactables", false, function(s) _G.ESPIgnoreItems = s; updateESPState() end)
-addInput(visPage, "ESP Max Distance", "Max ESP render distance (studs)", _G.ESPMaxDistance, function(v) _G.ESPMaxDistance = v; updateESPState() end)
 
 addToggle(tpPage, "Auto Teleport", "Loop teleport to saved position", false, function(s) autoTpEnabled = s end)
 addToggle(tpPage, "Ctrl + Click TP", "Teleport to mouse click location", false, function(s) ctrlTpEnabled = s end)
