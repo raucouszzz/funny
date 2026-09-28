@@ -1,5 +1,5 @@
 -- Check System Integrated Client (Master ESP, NPC HP & Item Interact ESP Edition)
--- Fully Optimized & Fixed Toggle State Control System
+-- Fully Optimized & Fixed Toggle State Control System (v1.93 Patch)
 
 local Players = game:GetService("Players")
 local Lighting = game:GetService("Lighting")
@@ -222,6 +222,128 @@ local function toggleFullbright(state)
 end
 
 ----------------------------------------------------
+-- 2.5 Remove Fog & FOV Changer
+----------------------------------------------------
+local Ext = {}   -- extra feature functions (keeps the number of top-level locals low)
+
+do  -- Remove Fog: Atmosphere / Fog / Blur / DepthOfField / ColorCorrection
+    local enabled = false
+    local token = 0
+    local conns = {}
+    local savedLighting = nil
+    local savedInst = setmetatable({}, { __mode = "k" })
+
+    local function clean(inst)
+        pcall(function()
+            if inst:IsA("Atmosphere") then
+                if not savedInst[inst] then
+                    savedInst[inst] = { Density = inst.Density, Haze = inst.Haze }
+                end
+                if inst.Density ~= 0 then inst.Density = 0 end
+                if inst.Haze ~= 0 then inst.Haze = 0 end
+            elseif inst:IsA("BlurEffect") or inst:IsA("DepthOfFieldEffect") or inst:IsA("ColorCorrectionEffect") then
+                if not savedInst[inst] then
+                    savedInst[inst] = { Enabled = inst.Enabled }
+                end
+                if inst.Enabled then inst.Enabled = false end
+            end
+        end)
+    end
+
+    local function clearFog()
+        pcall(function()
+            if Lighting.FogEnd < 1000000 then Lighting.FogEnd = 1000000 end
+            if Lighting.FogStart ~= 0 then Lighting.FogStart = 0 end
+        end)
+    end
+
+    local function sweep()
+        for _, d in ipairs(Lighting:GetDescendants()) do clean(d) end
+        local cam = Workspace.CurrentCamera
+        if cam then
+            for _, d in ipairs(cam:GetChildren()) do clean(d) end
+        end
+        clearFog()
+    end
+
+    function Ext.toggleRemoveFog(state)
+        if state and not enabled then
+            enabled = true
+            token += 1
+            savedLighting = { FogEnd = Lighting.FogEnd, FogStart = Lighting.FogStart }
+            sweep()
+            table.insert(conns, Lighting.DescendantAdded:Connect(function(d) task.defer(clean, d) end))
+            table.insert(conns, Lighting:GetPropertyChangedSignal("FogEnd"):Connect(clearFog))
+            table.insert(conns, Lighting:GetPropertyChangedSignal("FogStart"):Connect(clearFog))
+            local cam = Workspace.CurrentCamera
+            if cam then
+                table.insert(conns, cam.ChildAdded:Connect(function(d) task.defer(clean, d) end))
+            end
+            local myToken = token
+            task.spawn(function()
+                while myToken == token do
+                    task.wait(0.5)
+                    if myToken ~= token then break end
+                    sweep()   -- catches games that animate fog / atmosphere
+                end
+            end)
+        elseif not state and enabled then
+            enabled = false
+            token += 1
+            for _, c in ipairs(conns) do c:Disconnect() end
+            table.clear(conns)
+            for inst, s in pairs(savedInst) do
+                if inst.Parent then
+                    pcall(function()
+                        for k, v in pairs(s) do inst[k] = v end
+                    end)
+                end
+            end
+            table.clear(savedInst)
+            if savedLighting then
+                pcall(function()
+                    Lighting.FogEnd = savedLighting.FogEnd
+                    Lighting.FogStart = savedLighting.FogStart
+                end)
+                savedLighting = nil
+            end
+        end
+        if toggleUiUpdaters["Remove Fog"] then
+            toggleUiUpdaters["Remove Fog"](state)
+        end
+    end
+end
+
+do  -- FOV Changer
+    local enabled = false
+    local value = 70
+    local defaultFov = 70
+
+    function Ext.setFOV(v)
+        value = math.clamp(v, 1, 120)
+    end
+
+    function Ext.toggleFOV(state)
+        local cam = Workspace.CurrentCamera
+        if state and not enabled then
+            enabled = true
+            if cam then defaultFov = cam.FieldOfView end
+            RunService:BindToRenderStep("CheckSystemFOV", Enum.RenderPriority.Camera.Value + 3, function()
+                local c = Workspace.CurrentCamera
+                if c and c.FieldOfView ~= value then c.FieldOfView = value end
+            end)
+        elseif not state and enabled then
+            enabled = false
+            RunService:UnbindFromRenderStep("CheckSystemFOV")
+            if cam then cam.FieldOfView = defaultFov end
+        end
+        if toggleUiUpdaters["FOV Changer"] then
+            toggleUiUpdaters["FOV Changer"](state)
+        end
+    end
+end
+
+----------------------------------------------------
 -- 3. Movement & CFrame Walk & NoClip
 ----------------------------------------------------
 local function updateMovement()
@@ -370,6 +492,8 @@ local espFolder    = nil
 local espTracked   = {}          -- [targetInstance] = entry
 local espConns     = {}
 
+local ESPFilter = { enabled = false, set = {} }   -- ESP target filter (key = "Kind|Name")
+
 local function findPart(target)
     if target:IsA("BasePart") then return target end
     if target:IsA("Model") then
@@ -424,21 +548,28 @@ local function createEntry(target, humanoid)
     }
 end
 
-local function considerInstance(inst)
+-- returns target, humanoid (or nil if the instance is not an ESP target)
+local function classifyInstance(inst)
     if inst:IsA("Humanoid") then
         local model = inst.Parent
         if model and model:IsA("Model") and model ~= player.Character then
-            createEntry(model, inst)
+            return model, inst
         end
     elseif inst:IsA("ProximityPrompt") or inst:IsA("ClickDetector") then
         local target = inst.Parent
         if target and target:IsA("Attachment") then target = target.Parent end
         if target and target ~= Workspace and not isInsideCharacter(target) then
-            createEntry(target, nil)
+            return target, nil
         end
     elseif inst:IsA("Tool") then
-        if not isInsideCharacter(inst) then createEntry(inst, nil) end
+        if not isInsideCharacter(inst) then return inst, nil end
     end
+    return nil
+end
+
+local function considerInstance(inst)
+    local target, hum = classifyInstance(inst)
+    if target then createEntry(target, hum) end
 end
 
 local function refreshESP()
@@ -463,6 +594,7 @@ local function refreshESP()
                 (kind == "Player" and _G.ESPIgnorePlayers) or
                 (kind == "NPC"    and _G.ESPIgnoreNPCs) or
                 (kind == "Item"   and _G.ESPIgnoreItems) or
+                (ESPFilter.enabled and not ESPFilter.set[kind .. "|" .. target.Name]) or
                 plr == player
 
             local dist = e.part and (e.part.Position - camPos).Magnitude or math.huge
@@ -671,7 +803,7 @@ Header.Position = UDim2.new(0, 20, 0, 10)
 Header.BackgroundTransparency = 1
 
 local Title = Instance.new("TextLabel", Header)
-Title.Text = "Check System v.1.92 (Fixed & Optimized)"
+Title.Text = "Check System v.1.93"
 Title.Font = Enum.Font.GothamBold
 Title.TextSize = 18
 Title.TextColor3 = TEXT_MAIN
@@ -760,6 +892,61 @@ RunService:BindToRenderStep("CheckSystemMouseFree", Enum.RenderPriority.Camera.V
         UserInputService.MouseIconEnabled = true
     end
 end)
+
+----------------------------------------------------
+-- Panic Mode (disable every feature + hide the menu, one key)
+----------------------------------------------------
+local Ctl = {
+    panicKey = Enum.KeyCode.End,          -- default Panic key
+    menuKey = Enum.KeyCode.RightShift,    -- default menu key
+    panicActive = false,
+    restore = true,                       -- turn features back on when Panic ends
+    snapshot = {},
+    menuWasOpen = false,
+}
+
+local PANIC_FEATURES = {
+    "Unlock Camera", "Unlock First Person", "Bypass First Person",
+    "Infinite Jump", "Enable WalkSpeed", "CFrame Walk", "Enable JumpPower",
+    "Instant Interact", "Fullbright", "Remove Fog", "FOV Changer",
+    "Master ESP", "Auto Teleport", "Ctrl + Click TP",
+    "NoClip", "Enable Flight",
+}
+
+local function setPanicMode(state)
+    if state ~= Ctl.panicActive then
+        Ctl.panicActive = state
+        KeybindListening = false
+
+        if state then
+            table.clear(Ctl.snapshot)
+            for _, title in ipairs(PANIC_FEATURES) do
+                local c = toggleControl[title]
+                if c and c.get() then
+                    Ctl.snapshot[title] = true
+                    pcall(c.set, false)
+                end
+            end
+            Ctl.menuWasOpen = MainFrame.Visible
+            MainFrame.Visible = false
+            ScreenGui.Enabled = false
+        else
+            ScreenGui.Enabled = true
+            MainFrame.Visible = Ctl.menuWasOpen
+            updateMouseState()
+            if Ctl.restore then
+                for title in pairs(Ctl.snapshot) do
+                    local c = toggleControl[title]
+                    if c then pcall(c.set, true) end
+                end
+            end
+            table.clear(Ctl.snapshot)
+        end
+    end
+    if toggleUiUpdaters["Panic Mode"] then
+        toggleUiUpdaters["Panic Mode"](state)
+    end
+end
 
 ----------------------------------------------------
 -- Bypass First Person
@@ -1056,6 +1243,7 @@ local visPage = createPage("Visual")
 local espPage = createPage("ESP")
 local tpPage = createPage("Teleport")
 local sysPage = createPage("Checks")
+local settingsPage = createPage("Settings")
 local configPage = createPage("Config")
 
 addTabButton("Camera")
@@ -1064,6 +1252,7 @@ addTabButton("Visual")
 addTabButton("ESP")
 addTabButton("Teleport")
 addTabButton("Checks")
+addTabButton("Settings")
 addTabButton("Config")
 
 -- Config registry: every toggle / input / keybind / hex box registers itself here
@@ -1073,7 +1262,8 @@ local function registerConfig(key, getter, setter)
 end
 local loadDefaultConfig = function() end   -- assigned by the Config System section
 
-local function addToggle(parent, title, desc, default, callback)
+local toggleControl = {}   -- [title] = { get, set } used by Panic Mode
+local function addToggle(parent, title, desc, default, callback, noConfig)
     local card = Instance.new("Frame", parent)
     card.Size = UDim2.new(1, -10, 0, 50)
     card.BackgroundColor3 = PURPLE_CARD
@@ -1132,6 +1322,13 @@ local function addToggle(parent, title, desc, default, callback)
     switch.MouseButton1Click:Connect(function()
         setState(not state, false)
     end)
+
+    toggleControl[title] = {
+        get = function() return state end,
+        set = function(v) if v ~= state then setState(v, false) end end,
+    }
+
+    if noConfig then return end   -- e.g. Panic Mode is never saved in a config
 
     registerConfig(parent.Name .. "/" .. title,
         function() return state end,
@@ -1533,10 +1730,259 @@ addToggle(visPage, "Instant Interact", "Bypass proximity prompt hold time", fals
 addToggle(visPage, "Fullbright", "Remove dark fog and shadows", false, function(s) toggleFullbright(s) end)
 addKeybind(visPage, "Fullbright Keybind", "Press key to toggle Fullbright", nil, function(k) FullbrightKey = k end)
 addInput(visPage, "Light Intensity", "Adjust brightness level", LightIntensity, function(v) LightIntensity = v; if FullbrightEnabled then applyFullbright() end end, 0, 1, 0.05)
+addToggle(visPage, "Remove Fog", "Remove Atmosphere, fog, blur, DoF, dark filters", false, function(s) Ext.toggleRemoveFog(s) end)
+addToggle(visPage, "FOV Changer", "Override the camera field of view", false, function(s) Ext.toggleFOV(s) end)
+addInput(visPage, "FOV Value", "Field of view (1 - 120)", 70, function(v) Ext.setFOV(v) end, 30, 120, 1)
 
 addToggle(espPage, "Master ESP", "Enable players, entities and items highlights", false, function(s) setMasterESP(s) end)
 addKeybind(espPage, "Master ESP Keybind", "Press key to toggle Master ESP", nil, function(k) MasterESPKey = k end)
 addInput(espPage, "ESP Max Distance", "Max ESP render distance (studs)", _G.ESPMaxDistance, function(v) _G.ESPMaxDistance = v end, 50, 10000, 50)
+
+do  -- ESP Target Filter: pick exactly which entities / items / players to show
+    local scanResult = { Player = {}, NPC = {}, Item = {} }   -- [kind][name] = count
+    local KIND_ORDER = { "NPC", "Item", "Player" }
+    local KIND_LABEL = { NPC = "ENTITIES (NPC)", Item = "ITEMS / INTERACTABLES", Player = "PLAYERS" }
+    local searchText = ""
+    local scanToken = 0
+    local visibleKeys = {}
+
+    -- side window (left of the menu)
+    local frame = Instance.new("Frame", MainFrame)
+    frame.Name = "ESPTargetList"
+    frame.Size = UDim2.new(0, 230, 1, -85)
+    frame.Position = UDim2.new(0, -240, 0, 75)
+    frame.BackgroundColor3 = PURPLE_DARK
+    frame.Visible = false
+    Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 10)
+    local frameStroke = Instance.new("UIStroke", frame)
+    frameStroke.Color = PURPLE_PRIMARY
+    frameStroke.Thickness = 1.2
+
+    local titleLbl = Instance.new("TextLabel", frame)
+    titleLbl.Text = "ESP Target List"
+    titleLbl.Font = Enum.Font.GothamBold
+    titleLbl.TextSize = 13
+    titleLbl.TextColor3 = TEXT_MAIN
+    titleLbl.Size = UDim2.new(0, 140, 0, 30)
+    titleLbl.Position = UDim2.new(0, 10, 0, 0)
+    titleLbl.TextXAlignment = Enum.TextXAlignment.Left
+    titleLbl.BackgroundTransparency = 1
+
+    local function smallBtn(text, size, pos)
+        local b = Instance.new("TextButton", frame)
+        b.Text = text
+        b.Font = Enum.Font.GothamBold
+        b.TextSize = 11
+        b.TextColor3 = PURPLE_ACCENT
+        b.BackgroundColor3 = PURPLE_CARD
+        b.Size = size
+        b.Position = pos
+        Instance.new("UICorner", b).CornerRadius = UDim.new(0, 6)
+        return b
+    end
+
+    local refreshBtn2 = smallBtn("Refresh", UDim2.new(0, 64, 0, 22), UDim2.new(1, -72, 0, 4))
+    local selectBtn   = smallBtn("Select Shown", UDim2.new(0.5, -11, 0, 22), UDim2.new(0, 8, 0, 62))
+    local clearBtn    = smallBtn("Clear All", UDim2.new(0.5, -11, 0, 22), UDim2.new(0.5, 3, 0, 62))
+
+    local search = Instance.new("TextBox", frame)
+    search.Size = UDim2.new(1, -16, 0, 24)
+    search.Position = UDim2.new(0, 8, 0, 32)
+    search.Text = ""
+    search.PlaceholderText = "Search name..."
+    search.PlaceholderColor3 = TEXT_SUB
+    search.ClearTextOnFocus = false
+    search.Font = Enum.Font.Gotham
+    search.TextSize = 12
+    search.TextColor3 = PURPLE_ACCENT
+    search.BackgroundColor3 = PURPLE_CARD
+    Instance.new("UICorner", search).CornerRadius = UDim.new(0, 6)
+
+    local scroll = Instance.new("ScrollingFrame", frame)
+    scroll.Size = UDim2.new(1, -12, 1, -96)
+    scroll.Position = UDim2.new(0, 6, 0, 90)
+    scroll.BackgroundTransparency = 1
+    scroll.BorderSizePixel = 0
+    scroll.ScrollBarThickness = 2
+    scroll.ScrollBarImageColor3 = PURPLE_PRIMARY
+    scroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+    scroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+    local scrollLayout = Instance.new("UIListLayout", scroll)
+    scrollLayout.Padding = UDim.new(0, 3)
+    scrollLayout.SortOrder = Enum.SortOrder.LayoutOrder
+
+    local function render()
+        for _, c in ipairs(scroll:GetChildren()) do
+            if not c:IsA("UIListLayout") then c:Destroy() end
+        end
+        table.clear(visibleKeys)
+
+        local q = searchText:lower()
+        local order = 0
+
+        for _, kind in ipairs(KIND_ORDER) do
+            -- names found in the scan + names selected earlier (e.g. from a loaded config)
+            local names, seen = {}, {}
+            for name in pairs(scanResult[kind]) do
+                seen[name] = true
+                names[#names + 1] = name
+            end
+            for key in pairs(ESPFilter.set) do
+                local k, n = key:match("^(%w+)|(.+)$")
+                if k == kind and not seen[n] then
+                    seen[n] = true
+                    names[#names + 1] = n
+                end
+            end
+            if q ~= "" then
+                local filtered = {}
+                for _, n in ipairs(names) do
+                    if n:lower():find(q, 1, true) then filtered[#filtered + 1] = n end
+                end
+                names = filtered
+            end
+            table.sort(names, function(a, b) return a:lower() < b:lower() end)
+
+            if #names > 0 then
+                order += 1
+                local header = Instance.new("TextLabel", scroll)
+                header.LayoutOrder = order
+                header.Size = UDim2.new(1, 0, 0, 18)
+                header.BackgroundTransparency = 1
+                header.Font = Enum.Font.GothamBold
+                header.TextSize = 10
+                header.TextColor3 = PURPLE_ACCENT
+                header.TextXAlignment = Enum.TextXAlignment.Left
+                header.Text = "  " .. KIND_LABEL[kind] .. "  (" .. #names .. ")"
+
+                for _, name in ipairs(names) do
+                    order += 1
+                    local key = kind .. "|" .. name
+                    visibleKeys[#visibleKeys + 1] = key
+                    local count = scanResult[kind][name]
+
+                    local btn = Instance.new("TextButton", scroll)
+                    btn.LayoutOrder = order
+                    btn.Size = UDim2.new(1, 0, 0, 24)
+                    btn.Font = Enum.Font.GothamBold
+                    btn.TextSize = 11
+                    btn.TextXAlignment = Enum.TextXAlignment.Left
+                    btn.TextTruncate = Enum.TextTruncate.AtEnd
+                    btn.AutoButtonColor = false
+                    btn.Text = "  " .. name .. (count and count > 1 and ("   x" .. count) or (count == nil and "   (not in scan)" or ""))
+                    Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 5)
+
+                    local function paint()
+                        local on = ESPFilter.set[key]
+                        btn.BackgroundColor3 = on and PURPLE_PRIMARY or PURPLE_CARD
+                        btn.TextColor3 = on and TEXT_MAIN or TEXT_SUB
+                    end
+                    paint()
+
+                    btn.MouseButton1Click:Connect(function()
+                        if ESPFilter.set[key] then ESPFilter.set[key] = nil else ESPFilter.set[key] = true end
+                        paint()
+                        updateESPState()
+                    end)
+                end
+            end
+        end
+
+        if order == 0 then
+            local empty = Instance.new("TextLabel", scroll)
+            empty.Size = UDim2.new(1, 0, 0, 40)
+            empty.BackgroundTransparency = 1
+            empty.Font = Enum.Font.Gotham
+            empty.TextSize = 11
+            empty.TextColor3 = TEXT_SUB
+            empty.TextWrapped = true
+            empty.Text = "Nothing found. Press Refresh."
+        end
+    end
+
+    -- Scan the map for targets (chunked so it doesn't freeze the game)
+    local function scan()
+        scanToken += 1
+        local my = scanToken
+        titleLbl.Text = "Scanning..."
+        task.spawn(function()
+            local result = { Player = {}, NPC = {}, Item = {} }
+            local seenTargets = {}
+            local n = 0
+            for _, inst in ipairs(Workspace:GetDescendants()) do
+                if my ~= scanToken then return end
+                local target, hum = classifyInstance(inst)
+                if target and not seenTargets[target] then
+                    seenTargets[target] = true
+                    local kind = "Item"
+                    if hum then
+                        kind = Players:GetPlayerFromCharacter(target) and "Player" or "NPC"
+                    end
+                    result[kind][target.Name] = (result[kind][target.Name] or 0) + 1
+                end
+                n += 1
+                if n % 500 == 0 then task.wait() end
+            end
+            scanResult = result
+            titleLbl.Text = "ESP Target List"
+            render()
+        end)
+    end
+
+    refreshBtn2.MouseButton1Click:Connect(scan)
+    search:GetPropertyChangedSignal("Text"):Connect(function()
+        searchText = search.Text
+        render()
+    end)
+    selectBtn.MouseButton1Click:Connect(function()
+        for _, key in ipairs(visibleKeys) do ESPFilter.set[key] = true end
+        render()
+        updateESPState()
+    end)
+    clearBtn.MouseButton1Click:Connect(function()
+        table.clear(ESPFilter.set)
+        render()
+        updateESPState()
+    end)
+
+    -- controls on the ESP page
+    addToggle(espPage, "ESP Filter", "Only show targets selected in the Target List", false, function(s)
+        ESPFilter.enabled = s
+        updateESPState()
+    end)
+    addButton(espPage, "Open / Close ESP Target List", function()
+        frame.Visible = not frame.Visible
+        if frame.Visible then
+            render()
+            if next(scanResult.NPC) == nil and next(scanResult.Item) == nil and next(scanResult.Player) == nil then
+                scan()
+            end
+        end
+    end)
+    addButton(espPage, "Refresh ESP Target List", function()
+        frame.Visible = true
+        scan()
+    end)
+
+    -- save / load the selection inside configs
+    registerConfig("ESP/FilterSelection",
+        function()
+            local t = {}
+            for key in pairs(ESPFilter.set) do t[#t + 1] = key end
+            table.sort(t)
+            return t
+        end,
+        function(v)
+            if type(v) == "table" then
+                table.clear(ESPFilter.set)
+                for _, key in ipairs(v) do
+                    if type(key) == "string" then ESPFilter.set[key] = true end
+                end
+                render()
+                updateESPState()
+            end
+        end)
+end
 
 addToggle(espPage, "Show Names & HP", "Show name, HP and distance tag on players/entities", true, function(s) _G.ESPShowName = s; updateESPState() end)
 addInput(espPage, "Names & HP Text Size", "Text size of player/entity tags", _G.ESPNameTextSize, function(v) _G.ESPNameTextSize = math.clamp(v, 1, 100) end, 8, 32, 1)
@@ -1567,6 +2013,11 @@ addButton(tpPage, "Teleport to Saved Position", function()
         player.Character:MoveTo(savedPosition.Position)
     end
 end)
+
+addToggle(settingsPage, "Panic Mode", "Disable ALL features + hide menu (press again to undo)", false, function(s) setPanicMode(s) end, true)
+addKeybind(settingsPage, "Panic Keybind", "Press key to toggle Panic Mode", Ctl.panicKey, function(k) Ctl.panicKey = k end)
+addToggle(settingsPage, "Restore After Panic", "Turn features back on when Panic ends", true, function(s) Ctl.restore = s end)
+addKeybind(settingsPage, "Menu Keybind", "Key that opens / closes this menu", Ctl.menuKey, function(k) Ctl.menuKey = k end)
 
 local PlayerListFrame = Instance.new("Frame", MainFrame)
 PlayerListFrame.Size = UDim2.new(0, 200, 1, -85)
@@ -1987,11 +2438,12 @@ do
 
     addButton(configPage, "Overwrite Config", function()
         if not selected then
-            say("Select a config in the list first.")
+            say("Select a config from the list first.")
             return
         end
         local ok, err = writeConfig(selected, collectSettings())
         if ok then
+            rebuildList()
             say('Overwrote config "' .. selected .. '".')
         else
             say("Overwrite failed: " .. tostring(err))
@@ -2000,7 +2452,7 @@ do
 
     addButton(configPage, "Load Config", function()
         if not selected then
-            say("Select a config in the list first.")
+            say("Select a config from the list first.")
             return
         end
         local data, err = readConfig(selected)
@@ -2011,103 +2463,86 @@ do
         if applySettings(data) then
             say('Loaded config "' .. selected .. '".')
         else
-            say("Load failed: invalid config data.")
+            say("Failed to apply settings.")
         end
     end)
 
-    addButton(configPage, "Set Default Config", function()
+    addButton(configPage, "Set As Default Config", function()
         if not selected then
-            say("Select a config in the list first.")
+            say("Select a config from the list first.")
             return
         end
         local ok, err = setDefault(selected)
         if ok then
             rebuildList()
-            say('"' .. selected .. '" will load automatically when the script runs.')
+            say('"' .. selected .. '" is now the default config.')
         else
-            say("Could not set default: " .. tostring(err))
+            say("Set default failed: " .. tostring(err))
         end
     end)
 
-    rebuildList()
+    addButton(configPage, "Clear Default Config", function()
+        setDefault("")
+        rebuildList()
+        say("Default config cleared.")
+    end)
 
-    -- called once at the very end of the script
     loadDefaultConfig = function()
-        local default = getDefault()
-        if not default then return end
-        local data = readConfig(default)
-        if data and applySettings(data) then
-            selected = default
-            rebuildList()
-            say('Auto-loaded default config "' .. default .. '".')
+        local defName = getDefault()
+        if defName then
+            local data = readConfig(defName)
+            if data then applySettings(data) end
         end
     end
+
+    rebuildList()
+    task.defer(loadDefaultConfig)
 end
 
 ----------------------------------------------------
--- Character Initialization & Key Bindings
+-- 9. Hotkey Listeners & Global Hotkey Controller
 ----------------------------------------------------
-local function setupCharacter(char)
-    local hum = char:WaitForChild("Humanoid")
-    DefaultWalkSpeed = hum.WalkSpeed
-    DefaultJumpPower = hum.JumpPower
-    
-    updateMovement()
-    if FlightState then startFlight() end
-    if NoclipState then toggleNoclip(true) end
-    if CFrameWalkEnabled then toggleCFrameWalk(true) end
-end
-
-player.CharacterAdded:Connect(setupCharacter)
-if player.Character then setupCharacter(player.Character) end
-
-pages["Camera"].Visible = true
-for _, child in ipairs(Sidebar:GetChildren()) do
-    if child:IsA("TextButton") and child.Text:find("Camera") then
-        child.TextColor3 = TEXT_MAIN
-        child.BackgroundColor3 = PURPLE_PRIMARY
-    end
-end
-
 UserInputService.InputBegan:Connect(function(input, gpe)
     if gpe then return end
     
     if KeybindListening then return end   -- currently binding a key
 
-    if input.KeyCode == Enum.KeyCode.RightShift then
+    -- Panic key always works (even while the menu is hidden)
+    if Ctl.panicKey and input.KeyCode == Ctl.panicKey then
+        setPanicMode(not Ctl.panicActive)
+        return
+    end
+    if Ctl.panicActive then return end    -- every other hotkey is blocked during Panic
+
+    if Ctl.menuKey and input.KeyCode == Ctl.menuKey then
         toggleGuiVisibility()
     end
-    
-    if input.UserInputType == Enum.UserInputType.Keyboard then
-        if NoclipKey and input.KeyCode == NoclipKey then
-            toggleNoclip(not NoclipState)
-        end
-        if FlightKey and input.KeyCode == FlightKey then
-            toggleFlight(not FlightState)
-        end
-        if AutoTpKey and input.KeyCode == AutoTpKey then
-            setAutoTeleport(not autoTpEnabled)
-        end
-        if FullbrightKey and input.KeyCode == FullbrightKey then
-            toggleFullbright(not FullbrightEnabled)
-        end
-        if MasterESPKey and input.KeyCode == MasterESPKey then
-            setMasterESP(not _G.ESPEnabled)
-        end
-        if FirstPersonKey and input.KeyCode == FirstPersonKey then
-            toggleUnlockFirstPerson(not UnlockFirstPersonEnabled)
-        end
-        if BypassFPKey and input.KeyCode == BypassFPKey then
-            toggleBypassFirstPerson(not BypassFPEnabled)
-        end
+
+    if FirstPersonKey and input.KeyCode == FirstPersonKey then
+        toggleUnlockFirstPerson(not UnlockFirstPersonEnabled)
+    end
+
+    if BypassFPKey and input.KeyCode == BypassFPKey then
+        toggleBypassFirstPerson(not BypassFPEnabled)
+    end
+
+    if FullbrightKey and input.KeyCode == FullbrightKey then
+        toggleFullbright(not FullbrightEnabled)
+    end
+
+    if MasterESPKey and input.KeyCode == MasterESPKey then
+        setMasterESP(not _G.ESPEnabled)
+    end
+
+    if AutoTpKey and input.KeyCode == AutoTpKey then
+        setAutoTeleport(not autoTpEnabled)
+    end
+
+    if NoclipKey and input.KeyCode == NoclipKey then
+        toggleNoclip(not NoclipState)
+    end
+
+    if FlightKey and input.KeyCode == FlightKey then
+        toggleFlight(not FlightState)
     end
 end)
-
--- Load the default config last, after the character has been set up
-loadDefaultConfig()
-
-StarterGui:SetCore("SendNotification", {
-    Title = "Check System",
-    Text = "Script executed successfully!",
-    Duration = 5
-})
