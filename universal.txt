@@ -272,190 +272,215 @@ local function toggleFlight(state)
 end
 
 ----------------------------------------------------
--- 5. Master ESP & Clean Manager
+-- 5. Master ESP (Optimized, event-driven)
+-- แทนที่ Section 5 เดิมทั้งหมด (cleanESP, updateESPState และ loop task.spawn เดิม)
 ----------------------------------------------------
-local function cleanESP()
-    for _, v in ipairs(Workspace:GetDescendants()) do
-        if v.Name == "GetRealPlayer" or v.Name == "PlayerNameTag" or
-           v.Name == "GetRealEntity" or v.Name == "EntityNameTag" or
-           v.Name == "ItemHighlight" or v.Name == "ItemTag" then
-            v:Destroy()
+_G.ESPMaxDistance = _G.ESPMaxDistance or 2000   -- ระยะสูงสุดที่แสดง (studs)
+
+local ESP_REFRESH_RATE = 0.3     -- วินาที/รอบ (แทนการสแกน Workspace ทุก 1 วินาที)
+local MAX_HIGHLIGHTS   = 30      -- Roblox แสดง Highlight พร้อมกันได้ ~31 อัน
+local ITEM_COLOR       = Color3.fromRGB(0, 255, 200)
+
+local espRunning   = false
+local espToken     = 0
+local espFolder    = nil
+local espTracked   = {}          -- [targetInstance] = entry
+local espConns     = {}
+
+local function findPart(target)
+    if target:IsA("BasePart") then return target end
+    if target:IsA("Model") then
+        return target:FindFirstChild("Head") or target.PrimaryPart or target:FindFirstChildWhichIsA("BasePart", true)
+    end
+    return target:FindFirstChild("Handle") or target:FindFirstChildWhichIsA("BasePart", true)
+end
+
+local function isInsideCharacter(inst)
+    local m = inst:FindFirstAncestorOfClass("Model")
+    return m ~= nil and m:FindFirstChildOfClass("Humanoid") ~= nil
+end
+
+local function removeEntry(target)
+    local e = espTracked[target]
+    if not e then return end
+    espTracked[target] = nil
+    if e.hl then e.hl:Destroy() end
+    if e.bb then e.bb:Destroy() end
+end
+
+local function createEntry(target, humanoid)
+    if espTracked[target] or not espFolder then return end
+
+    local hl = Instance.new("Highlight")
+    hl.Adornee = target
+    hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+    hl.FillTransparency = 0.5
+    hl.OutlineTransparency = 0
+    hl.Enabled = false
+    hl.Parent = espFolder
+
+    local bb = Instance.new("BillboardGui")
+    bb.Size = UDim2.new(0, 200, 0, 20)
+    bb.AlwaysOnTop = true
+    bb.StudsOffset = Vector3.new(0, humanoid and 2.5 or 1.5, 0)
+    bb.Enabled = false
+    bb.Parent = espFolder
+
+    local label = Instance.new("TextLabel")
+    label.Name = "Tag"
+    label.Size = UDim2.new(1, 0, 1, 0)
+    label.BackgroundTransparency = 1
+    label.Font = Enum.Font.GothamBold
+    label.TextSize = 13
+    label.TextStrokeTransparency = 0.3
+    label.Parent = bb
+
+    espTracked[target] = {
+        target = target, hum = humanoid, hl = hl, bb = bb, label = label,
+        part = nil, lastText = "",
+    }
+end
+
+local function considerInstance(inst)
+    if inst:IsA("Humanoid") then
+        local model = inst.Parent
+        if model and model:IsA("Model") and model ~= player.Character then
+            createEntry(model, inst)
+        end
+    elseif inst:IsA("ProximityPrompt") or inst:IsA("ClickDetector") then
+        local target = inst.Parent
+        if target and target:IsA("Attachment") then target = target.Parent end
+        if target and target ~= Workspace and not isInsideCharacter(target) then
+            createEntry(target, nil)
+        end
+    elseif inst:IsA("Tool") then
+        if not isInsideCharacter(inst) then createEntry(inst, nil) end
+    end
+end
+
+local function refreshESP()
+    if not espRunning then return end
+    local camPos = camera.CFrame.Position
+    local maxDist = _G.ESPMaxDistance
+    local visible = {}
+
+    for target, e in pairs(espTracked) do
+        if not target:IsDescendantOf(Workspace) then
+            removeEntry(target)
+        else
+            e.part = (e.part and e.part.Parent and e.part) or findPart(target)
+
+            local kind, plr = "Item", nil
+            if e.hum then
+                plr = Players:GetPlayerFromCharacter(target)
+                kind = plr and "Player" or "NPC"
+            end
+
+            local ignored =
+                (kind == "Player" and _G.ESPIgnorePlayers) or
+                (kind == "NPC"    and _G.ESPIgnoreNPCs) or
+                (kind == "Item"   and _G.ESPIgnoreItems) or
+                plr == player
+
+            local dist = e.part and (e.part.Position - camPos).Magnitude or math.huge
+
+            if ignored or not e.part or dist > maxDist then
+                e.hl.Enabled = false
+                e.bb.Enabled = false
+            else
+                e.kind, e.plr, e.dist = kind, plr, dist
+                visible[#visible + 1] = e
+            end
+        end
+    end
+
+    -- ใกล้สุดก่อน แล้วจำกัดจำนวน Highlight
+    table.sort(visible, function(a, b) return a.dist < b.dist end)
+
+    for i, e in ipairs(visible) do
+        local color, showName, text
+        if e.kind == "Player" then
+            color = _G.UseTeamColor and e.plr.TeamColor.Color
+                or ((player.TeamColor == e.plr.TeamColor) and _G.FriendColor or _G.EnemyColor)
+            showName = _G.ESPShowName
+            text = e.plr.Name
+        elseif e.kind == "NPC" then
+            color = _G.EntityColor
+            showName = _G.ESPShowName
+            text = string.format("%s | HP: %d", e.target.Name, e.hum.MaxHealth > 0 and math.floor(e.hum.Health) or 0)
+        else
+            color = ITEM_COLOR
+            showName = _G.ESPShowItemName
+            text = e.target.Name
+        end
+
+        e.hl.Enabled = i <= MAX_HIGHLIGHTS
+        e.hl.FillColor = color
+        e.hl.OutlineColor = (e.kind == "Item") and Color3.new(1, 1, 1) or color
+
+        e.bb.Adornee = e.part
+        e.bb.Enabled = showName
+        if showName then
+            e.label.TextColor3 = color
+            text = string.format("%s [%dm]", text, math.floor(e.dist))
+            if text ~= e.lastText then   -- อัปเดต Text เฉพาะตอนเปลี่ยน
+                e.label.Text = text
+                e.lastText = text
+            end
         end
     end
 end
 
-local function updateESPState()
-    if not _G.ESPEnabled then
-        cleanESP()
+local function setESPEnabled(state)
+    if state == espRunning then return end
+    espRunning = state
+    espToken += 1
+
+    for _, c in ipairs(espConns) do c:Disconnect() end
+    table.clear(espConns)
+
+    if not state then
+        for target in pairs(espTracked) do removeEntry(target) end
+        if espFolder then espFolder:Destroy() espFolder = nil end
         return
     end
 
-    -- 1. Players ESP
-    for _, v in ipairs(Players:GetPlayers()) do
-        if v ~= player and v.Character then
-            local char = v.Character
-            local hl = char:FindFirstChild("GetRealPlayer")
-            local tag = char:FindFirstChild("PlayerNameTag")
+    espFolder = Instance.new("Folder")
+    espFolder.Name = "ESPContainer"
+    espFolder.Parent = camera          -- ไม่ยัด Instance เข้า Character/Part ของเกมอีกต่อไป
 
-            if not _G.ESPIgnorePlayers then
-                if not hl then
-                    hl = Instance.new("Highlight")
-                    hl.Name = "GetRealPlayer"
-                    hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-                    hl.Parent = char
-                end
-                local color = _G.UseTeamColor and v.TeamColor.Color or ((player.TeamColor == v.TeamColor) and _G.FriendColor or _G.EnemyColor)
-                hl.FillColor = color
-                hl.Enabled = true
-
-                if _G.ESPShowName then
-                    local targetPart = char:FindFirstChild("Head") or char:FindFirstChild("HumanoidRootPart")
-                    if not tag and targetPart then
-                        tag = Instance.new("BillboardGui")
-                        tag.Name = "PlayerNameTag"
-                        tag.Size = UDim2.new(0, 200, 0, 50)
-                        tag.AlwaysOnTop = true
-                        tag.StudsOffset = Vector3.new(0, 2, 0)
-                        tag.Adornee = targetPart
-                        
-                        local tLabel = Instance.new("TextLabel", tag)
-                        tLabel.Name = "Tag"
-                        tLabel.BackgroundTransparency = 1
-                        tLabel.Size = UDim2.new(0, 300, 0, 20)
-                        tLabel.Position = UDim2.new(0, -50, 0, 0)
-                        tLabel.TextSize = 14
-                        tLabel.Font = Enum.Font.SourceSansBold
-                        tLabel.TextStrokeTransparency = 0.3
-                        tag.Parent = char
-                    end
-                    if tag and tag:FindFirstChild("Tag") then
-                        tag.Tag.Text = v.Name
-                        tag.Tag.TextColor3 = color
-                        tag.Enabled = true
-                    end
-                elseif tag then
-                    tag.Enabled = false
-                end
-            else
-                if hl then hl:Destroy() end
-                if tag then tag:Destroy() end
-            end
+    -- Event-driven: ติดตามเฉพาะสิ่งที่เพิ่ม/ลบ ไม่ต้อง GetDescendants ซ้ำ
+    table.insert(espConns, Workspace.DescendantAdded:Connect(considerInstance))
+    table.insert(espConns, Workspace.DescendantRemoving:Connect(function(inst)
+        if espTracked[inst] then
+            removeEntry(inst)
+        elseif inst:IsA("Humanoid") and inst.Parent then
+            removeEntry(inst.Parent)
         end
-    end
+    end))
 
-    -- 2. NPCs & Items ESP
-    for _, obj in ipairs(Workspace:GetDescendants()) do
-        if obj:IsA("Humanoid") then
-            local character = obj.Parent
-            if character and not Players:GetPlayerFromCharacter(character) then
-                local hl = character:FindFirstChild("GetRealEntity")
-                local billboard = character:FindFirstChild("EntityNameTag")
-
-                if not _G.ESPIgnoreNPCs then
-                    if not hl then
-                        hl = Instance.new("Highlight")
-                        hl.Name = "GetRealEntity"
-                        hl.FillTransparency = 0.5
-                        hl.OutlineTransparency = 0
-                        hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-                        hl.Parent = character
-                    end
-                    hl.Enabled = true
-
-                    if _G.ESPShowName then
-                        if not billboard then
-                            billboard = Instance.new("BillboardGui")
-                            billboard.Name = "EntityNameTag"
-                            billboard.Size = UDim2.new(4, 0, 1.5, 0)
-                            billboard.StudsOffset = Vector3.new(0, 2.5, 0)
-                            billboard.AlwaysOnTop = true
-                            billboard.Adornee = character:FindFirstChild("Head") or character.PrimaryPart or character:FindFirstChildWhichIsA("BasePart")
-                            
-                            local textLabel = Instance.new("TextLabel")
-                            textLabel.Name = "Tag"
-                            textLabel.Size = UDim2.new(1, 0, 1, 0)
-                            textLabel.BackgroundTransparency = 1
-                            textLabel.Font = Enum.Font.SourceSansBold
-                            textLabel.TextSize = 16
-                            textLabel.TextColor3 = _G.EntityColor
-                            textLabel.TextStrokeTransparency = 0.3
-                            textLabel.Parent = billboard
-                            billboard.Parent = character
-                        end
-                        if billboard and billboard:FindFirstChild("Tag") then
-                            billboard.Tag.Text = character.Name .. " | HP: " .. (obj.MaxHealth > 0 and math.floor(obj.Health) or 0)
-                            billboard.Enabled = true
-                        end
-                    elseif billboard then
-                        billboard.Enabled = false
-                    end
-                else
-                    if hl then hl:Destroy() end
-                    if billboard then billboard:Destroy() end
-                end
-            end
-        elseif obj:FindFirstChildOfClass("ProximityPrompt") or obj:FindFirstChildOfClass("ClickDetector") or obj:IsA("Tool") then
-            local targetPart = obj:IsA("BasePart") and obj or (obj:IsA("Model") and (obj.PrimaryPart or obj:FindFirstChildWhichIsA("BasePart")) or obj:FindFirstChild("Handle"))
-            if targetPart then
-                local itemHl = targetPart:FindFirstChild("ItemHighlight")
-                local itemTag = targetPart:FindFirstChild("ItemTag")
-
-                if not _G.ESPIgnoreItems then
-                    if not itemHl then
-                        itemHl = Instance.new("Highlight")
-                        itemHl.Name = "ItemHighlight"
-                        itemHl.FillColor = Color3.fromRGB(0, 255, 200)
-                        itemHl.OutlineColor = Color3.fromRGB(255, 255, 255)
-                        itemHl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-                        itemHl.Parent = targetPart
-                    end
-                    itemHl.Enabled = true
-
-                    if _G.ESPShowItemName then
-                        if not itemTag then
-                            itemTag = Instance.new("BillboardGui")
-                            itemTag.Name = "ItemTag"
-                            itemTag.Size = UDim2.new(0, 200, 0, 40)
-                            itemTag.AlwaysOnTop = true
-                            itemTag.StudsOffset = Vector3.new(0, 1.5, 0)
-                            itemTag.Adornee = targetPart
-
-                            local tLabel = Instance.new("TextLabel", itemTag)
-                            tLabel.Name = "Tag"
-                            tLabel.BackgroundTransparency = 1
-                            tLabel.Position = UDim2.new(0, -50, 0, 0)
-                            tLabel.Size = UDim2.new(0, 300, 0, 20)
-                            tLabel.TextSize = 13
-                            tLabel.TextColor3 = Color3.fromRGB(0, 255, 200)
-                            tLabel.TextStrokeTransparency = 0.2
-                            tLabel.Font = Enum.Font.GothamBold
-                            itemTag.Parent = targetPart
-                        end
-                        if itemTag and itemTag:FindFirstChild("Tag") then
-                            itemTag.Tag.Text = obj.Name
-                            itemTag.Enabled = true
-                        end
-                    elseif itemTag then
-                        itemTag.Enabled = false
-                    end
-                else
-                    if itemHl then itemHl:Destroy() end
-                    if itemTag then itemTag:Destroy() end
-                end
-            end
+    local myToken = espToken
+    task.spawn(function()
+        -- สแกนครั้งแรกแบบแบ่งเป็น chunk กัน FPS ตก
+        local count = 0
+        for _, inst in ipairs(Workspace:GetDescendants()) do
+            if myToken ~= espToken then return end
+            considerInstance(inst)
+            count += 1
+            if count % 400 == 0 then task.wait() end
         end
-    end
+        while myToken == espToken do
+            refreshESP()
+            task.wait(ESP_REFRESH_RATE)
+        end
+    end)
 end
 
--- Optimized Loop
-task.spawn(function()
-    while true do
-        task.wait(1.0)
-        if _G.ESPEnabled then
-            updateESPState()
-        end
-    end
-end)
+-- ชื่อเดิม: UI toggle ทุกตัวเรียกฟังก์ชันนี้อยู่แล้ว
+local function updateESPState()
+    setESPEnabled(_G.ESPEnabled)
+    if espRunning then refreshESP() end
+end
 
 ----------------------------------------------------
 -- 6. Teleport Logic
@@ -853,6 +878,7 @@ addToggle(visPage, "Show Item Names", "Show name tags on items/interactables", t
 addToggle(visPage, "Ignore Players", "Do not highlight real players", false, function(s) _G.ESPIgnorePlayers = s; updateESPState() end)
 addToggle(visPage, "Ignore Entities", "Do not highlight NPCs/Ghosts", false, function(s) _G.ESPIgnoreNPCs = s; updateESPState() end)
 addToggle(visPage, "Ignore Items", "Do not highlight items/interactables", false, function(s) _G.ESPIgnoreItems = s; updateESPState() end)
+addInput(visPage, "ESP Max Distance", "Max ESP render distance (studs)", _G.ESPMaxDistance, function(v) _G.ESPMaxDistance = v; updateESPState() end)
 
 addToggle(tpPage, "Auto Teleport", "Loop teleport to saved position", false, function(s) autoTpEnabled = s end)
 addToggle(tpPage, "Ctrl + Click TP", "Teleport to mouse click location", false, function(s) ctrlTpEnabled = s end)
