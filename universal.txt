@@ -596,7 +596,34 @@ local ScreenGui = Instance.new("ScreenGui")
 ScreenGui.Name = "CheckSystemMenu"
 ScreenGui.ResetOnSpawn = false
 ScreenGui.DisplayOrder = 999
-ScreenGui.Parent = player:WaitForChild("PlayerGui")
+-- Put the menu where the game's own scripts don't scan for buttons
+-- (stops map-made hover/click animations from touching our buttons).
+-- Falls back to PlayerGui (old behaviour) if gethui/CoreGui aren't available.
+do
+    local target
+    local okHui, hui = pcall(function() return gethui and gethui() end)
+    if okHui and hui then
+        target = hui
+    else
+        local okCore, core = pcall(function() return game:GetService("CoreGui") end)
+        if okCore and core then target = core end
+    end
+
+    local parented = false
+    if target then
+        parented = pcall(function() ScreenGui.Parent = target end) and ScreenGui.Parent ~= nil
+    end
+    if not parented then
+        ScreenGui.Parent = player:WaitForChild("PlayerGui")
+    end
+end
+
+-- No hover/press colour change on our buttons (tab colours are handled manually)
+ScreenGui.DescendantAdded:Connect(function(d)
+    if d:IsA("GuiButton") then
+        d.AutoButtonColor = false
+    end
+end)
 
 local MenuToggleBtn = Instance.new("TextButton", ScreenGui)
 MenuToggleBtn.Name = "MenuToggleButton"
@@ -671,13 +698,23 @@ CloseBtn.BackgroundTransparency = 1
 ----------------------------------------------------
 -- Invisible Modal button: while MainFrame is visible, Roblox frees the mouse.
 -- It stops working automatically when the menu is hidden.
+-- Kept in its own tiny ScreenGui inside PlayerGui (Modal is only reliable there),
+-- so the menu itself can live in gethui()/CoreGui. It is invisible and 1px.
+local ModalGui = Instance.new("ScreenGui")
+ModalGui.Name = "CheckSystemModal"
+ModalGui.ResetOnSpawn = false
+ModalGui.DisplayOrder = 998
+ModalGui.Parent = player:WaitForChild("PlayerGui")
+
 local ModalUnlock = Instance.new("TextButton")
 ModalUnlock.Name = "ModalUnlock"
 ModalUnlock.Text = ""
+ModalUnlock.AutoButtonColor = false
 ModalUnlock.BackgroundTransparency = 1
 ModalUnlock.Size = UDim2.new(0, 1, 0, 1)
 ModalUnlock.Modal = true
-ModalUnlock.Parent = MainFrame
+ModalUnlock.Visible = false
+ModalUnlock.Parent = ModalGui
 
 local function updateMouseState()
     if MainFrame.Visible then
@@ -693,7 +730,11 @@ end
 
 -- Runs right AFTER the camera script each frame.
 RunService:BindToRenderStep("CheckSystemMouseFree", Enum.RenderPriority.Camera.Value + 1, function()
-    if not MainFrame.Visible then return end
+    if not MainFrame.Visible then
+        if ModalUnlock.Visible then ModalUnlock.Visible = false end
+        return
+    end
+    if not ModalUnlock.Visible then ModalUnlock.Visible = true end
 
     local looking = UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton2)
 
