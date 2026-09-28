@@ -88,6 +88,12 @@ local FullbrightKey = nil
 local MasterESPKey = nil
 local FirstPersonKey = Enum.KeyCode.RightAlt
 
+local BypassFPEnabled = false
+local BypassFPKey = nil
+local BypassSensitivity = 0.25     -- degrees per mouse pixel
+local BypassMaxZoom = 60           -- studs
+local ShowCursorEnabled = true
+
 ----------------------------------------------------
 -- Instant Interact & Infinite Jump
 ----------------------------------------------------
@@ -599,7 +605,7 @@ ScreenGui.DisplayOrder = 999
 -- Put the menu where the game's own scripts don't scan for buttons
 -- (stops map-made hover/click animations from touching our buttons).
 -- Falls back to PlayerGui (old behaviour) if gethui/CoreGui aren't available.
-do
+local function mountGui(gui)
     local target
     local okHui, hui = pcall(function() return gethui and gethui() end)
     if okHui and hui then
@@ -611,12 +617,14 @@ do
 
     local parented = false
     if target then
-        parented = pcall(function() ScreenGui.Parent = target end) and ScreenGui.Parent ~= nil
+        parented = pcall(function() gui.Parent = target end) and gui.Parent ~= nil
     end
     if not parented then
-        ScreenGui.Parent = player:WaitForChild("PlayerGui")
+        gui.Parent = player:WaitForChild("PlayerGui")
     end
 end
+
+mountGui(ScreenGui)
 
 -- No hover/press colour change on our buttons (tab colours are handled manually)
 ScreenGui.DescendantAdded:Connect(function(d)
@@ -750,6 +758,220 @@ RunService:BindToRenderStep("CheckSystemMouseFree", Enum.RenderPriority.Camera.V
     end
     if not UserInputService.MouseIconEnabled then
         UserInputService.MouseIconEnabled = true
+    end
+end)
+
+----------------------------------------------------
+-- Bypass First Person
+-- Own camera for maps whose camera script ignores Roblox's zoom / camera
+-- properties (Unlock Camera / Unlock First Person don't work there).
+--  * Mouse wheel = zoom: all the way in = first person, out = third person
+--  * First person : mouse locked, camera follows the mouse
+--  * Third person : hold Right Mouse Button to look around
+--  * Menu open    : mouse free; hold Right Mouse Button to look around
+--  * Your character is forced visible while this is ON (some maps hide it).
+--    Everything is put back exactly as it was when you turn it OFF.
+----------------------------------------------------
+local bypassYaw, bypassPitch = 0, 0
+local bypassZoom, bypassZoomTarget = 0, 0
+local bypassSaved = setmetatable({}, { __mode = "k" })   -- [instance] = original values
+
+local BODY_PARTS = {
+    Head = true, Torso = true,
+    ["Left Arm"] = true, ["Right Arm"] = true, ["Left Leg"] = true, ["Right Leg"] = true,
+    UpperTorso = true, LowerTorso = true,
+    LeftUpperArm = true, LeftLowerArm = true, LeftHand = true,
+    RightUpperArm = true, RightLowerArm = true, RightHand = true,
+    LeftUpperLeg = true, LeftLowerLeg = true, LeftFoot = true,
+    RightUpperLeg = true, RightLowerLeg = true, RightFoot = true,
+}
+
+local bypassRayParams = RaycastParams.new()
+bypassRayParams.FilterType = Enum.RaycastFilterType.Exclude
+bypassRayParams.IgnoreWater = true
+
+local function bypassSave(inst)
+    if bypassSaved[inst] == nil then
+        if inst:IsA("BasePart") then
+            bypassSaved[inst] = { t = inst.Transparency, l = inst.LocalTransparencyModifier }
+        else
+            bypassSaved[inst] = { t = inst.Transparency }
+        end
+    end
+end
+
+-- Make a body part visible (or, in first person, hide it locally so it can't block the view)
+local function bypassShowPart(part, hidden)
+    bypassSave(part)
+    pcall(function()
+        part.Transparency = 0
+        part.LocalTransparencyModifier = hidden and 1 or 0
+    end)
+    for _, d in ipairs(part:GetChildren()) do
+        if d:IsA("Decal") then
+            bypassSave(d)
+            pcall(function() d.Transparency = 0 end)
+        end
+    end
+end
+
+local function bypassUpdateVisuals(char, head, firstPerson)
+    for _, child in ipairs(char:GetChildren()) do
+        if child:IsA("BasePart") then
+            if BODY_PARTS[child.Name] then
+                bypassShowPart(child, firstPerson and child == head)
+            end
+        elseif child:IsA("Accessory") then
+            local handle = child:FindFirstChild("Handle")
+            if handle and handle:IsA("BasePart") then
+                bypassShowPart(handle, firstPerson and (handle.Position - head.Position).Magnitude < 1.5)
+            end
+        end
+    end
+end
+
+-- Put every property we touched back to what it was before
+local function bypassRestore()
+    for inst, saved in pairs(bypassSaved) do
+        if inst.Parent then
+            pcall(function()
+                inst.Transparency = saved.t
+                if saved.l ~= nil then inst.LocalTransparencyModifier = saved.l end
+            end)
+        end
+    end
+    table.clear(bypassSaved)
+end
+
+local function toggleBypassFirstPerson(state)
+    if state and not BypassFPEnabled then
+        local cam = Workspace.CurrentCamera
+        local head = player.Character and player.Character:FindFirstChild("Head")
+        if cam then
+            local rx, ry = cam.CFrame:ToOrientation()
+            bypassPitch, bypassYaw = rx, ry
+            bypassZoomTarget = 0
+            if head then
+                local d = (cam.CFrame.Position - head.Position).Magnitude
+                if d > 1.5 then bypassZoomTarget = math.clamp(d, 2, BypassMaxZoom) end
+            end
+            bypassZoom = bypassZoomTarget
+        end
+    elseif not state and BypassFPEnabled then
+        bypassRestore()
+        pcall(function()
+            local cam = Workspace.CurrentCamera
+            if cam then cam.CameraType = Enum.CameraType.Custom end
+        end)
+        UserInputService.MouseBehavior = Enum.MouseBehavior.Default
+    end
+
+    BypassFPEnabled = state
+
+    if toggleUiUpdaters["Bypass First Person"] then
+        toggleUiUpdaters["Bypass First Person"](state)
+    end
+end
+
+-- Mouse wheel zoom (ignored while the cursor is over the menu or another GUI)
+UserInputService.InputChanged:Connect(function(input, gpe)
+    if gpe or not BypassFPEnabled then return end
+    if input.UserInputType == Enum.UserInputType.MouseWheel then
+        local step = 2 + bypassZoomTarget * 0.12
+        bypassZoomTarget = math.clamp(bypassZoomTarget - input.Position.Z * step, 0, BypassMaxZoom)
+        if bypassZoomTarget < 1.5 then bypassZoomTarget = 0 end
+    end
+end)
+
+-- Runs after the mouse-free step above, so it has the final say on the mouse
+RunService:BindToRenderStep("CheckSystemBypassFP", Enum.RenderPriority.Camera.Value + 2, function(dt)
+    if not BypassFPEnabled then return end
+
+    local cam = Workspace.CurrentCamera
+    local char = player.Character
+    local head = char and char:FindFirstChild("Head")
+    if not cam or not head then return end
+
+    if cam.CameraType ~= Enum.CameraType.Scriptable then
+        cam.CameraType = Enum.CameraType.Scriptable
+    end
+
+    -- smooth zoom
+    bypassZoomTarget = math.min(bypassZoomTarget, BypassMaxZoom)
+    bypassZoom = bypassZoom + (bypassZoomTarget - bypassZoom) * (1 - math.exp(-dt * 14))
+    if math.abs(bypassZoom - bypassZoomTarget) < 0.02 then bypassZoom = bypassZoomTarget end
+
+    local firstPersonView = bypassZoom < 1.5        -- what we draw
+    local firstPersonMouse = bypassZoomTarget < 1.5 -- how the mouse behaves
+
+    local menuOpen = MainFrame.Visible
+    local rmb = UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton2)
+    local rotating = rmb or (firstPersonMouse and not menuOpen)
+    if UserInputService:GetFocusedTextBox() then rotating = false end   -- typing in chat / a box
+
+    if rotating then
+        UserInputService.MouseBehavior = (firstPersonMouse and not menuOpen)
+            and Enum.MouseBehavior.LockCenter
+            or Enum.MouseBehavior.LockCurrentPosition
+        local delta = UserInputService:GetMouseDelta()
+        local sens = math.rad(BypassSensitivity)
+        bypassYaw = bypassYaw - delta.X * sens
+        bypassPitch = math.clamp(bypassPitch - delta.Y * sens, -math.rad(85), math.rad(85))
+    elseif UserInputService.MouseBehavior ~= Enum.MouseBehavior.Default then
+        UserInputService.MouseBehavior = Enum.MouseBehavior.Default
+    end
+
+    bypassUpdateVisuals(char, head, firstPersonView)
+
+    -- camera: focus on the head, pull back by the zoom distance (0.6 in front of the head at zoom 0)
+    local rot = CFrame.fromOrientation(bypassPitch, bypassYaw, 0)
+    local focus = head.Position
+    local back = -rot.LookVector
+    local dist = bypassZoom - 0.6
+    if dist > 0 then
+        bypassRayParams.FilterDescendantsInstances = { char }
+        local hit = Workspace:Raycast(focus, back * dist, bypassRayParams)
+        if hit then
+            dist = math.max(0.4, (hit.Position - focus).Magnitude - 0.3)
+        end
+    end
+    cam.CFrame = CFrame.new(focus + back * dist) * rot
+end)
+
+----------------------------------------------------
+-- Cursor overlay
+-- Some maps hide / move the real cursor. While the menu is open we draw our own
+-- (only when "Show Cursor" is on, and hidden while you hold RMB to look around).
+----------------------------------------------------
+local CursorGui = Instance.new("ScreenGui")
+CursorGui.Name = "CheckSystemCursor"
+CursorGui.ResetOnSpawn = false
+CursorGui.IgnoreGuiInset = true      -- so it matches GetMouseLocation exactly
+CursorGui.DisplayOrder = 1000
+mountGui(CursorGui)
+
+local CursorDot = Instance.new("Frame")
+CursorDot.Name = "CursorDot"
+CursorDot.Size = UDim2.new(0, 14, 0, 14)
+CursorDot.BackgroundColor3 = TEXT_MAIN
+CursorDot.BorderSizePixel = 0
+CursorDot.Active = false
+CursorDot.Visible = false
+CursorDot.ZIndex = 100
+CursorDot.Parent = CursorGui
+Instance.new("UICorner", CursorDot).CornerRadius = UDim.new(1, 0)
+local cursorStroke = Instance.new("UIStroke", CursorDot)
+cursorStroke.Color = PURPLE_PRIMARY
+cursorStroke.Thickness = 2
+
+RunService.RenderStepped:Connect(function()
+    local show = ShowCursorEnabled
+        and MainFrame.Visible
+        and not UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton2)
+    if CursorDot.Visible ~= show then CursorDot.Visible = show end
+    if show then
+        local pos = UserInputService:GetMouseLocation()
+        CursorDot.Position = UDim2.fromOffset(pos.X - 7, pos.Y - 7)
     end
 end)
 
@@ -1294,6 +1516,11 @@ addToggle(camPage, "Unlock Camera", "Unlock camera distance limits", false, func
 addInput(camPage, "Camera Distance", "Max camera zoom distance", CameraMaxDistance, function(v) CameraMaxDistance = v end, 10, 5000, 10)
 addToggle(camPage, "Unlock First Person", "Unlock first person, shiftlock and zoom", false, function(s) toggleUnlockFirstPerson(s) end)
 addKeybind(camPage, "Unlock First Person Keybind", "Press key to toggle Unlock First Person", Enum.KeyCode.RightAlt, function(k) FirstPersonKey = k end)
+addToggle(camPage, "Bypass First Person", "Own camera: wheel zooms in/out, shows your character", false, function(s) toggleBypassFirstPerson(s) end)
+addKeybind(camPage, "Bypass First Person Keybind", "Press key to toggle Bypass First Person", nil, function(k) BypassFPKey = k end)
+addInput(camPage, "Bypass Sensitivity", "Mouse sensitivity of Bypass First Person", BypassSensitivity, function(v) BypassSensitivity = math.clamp(v, 0.01, 5) end, 0.05, 1, 0.01)
+addInput(camPage, "Bypass Max Zoom", "How far the Bypass camera can zoom out (studs)", BypassMaxZoom, function(v) BypassMaxZoom = math.clamp(v, 5, 2000) end, 5, 500, 5)
+addToggle(camPage, "Show Cursor", "Draw a cursor while the menu is open", true, function(s) ShowCursorEnabled = s end)
 
 addToggle(movePage, "Infinite Jump", "Jump infinitely in the air", false, function(s) InfiniteJumpEnabled = s end)
 addToggle(movePage, "Enable WalkSpeed", "Apply custom WalkSpeed", false, function(s) WalkSpeedEnabled = s; updateMovement() end)
@@ -1869,6 +2096,9 @@ UserInputService.InputBegan:Connect(function(input, gpe)
         end
         if FirstPersonKey and input.KeyCode == FirstPersonKey then
             toggleUnlockFirstPerson(not UnlockFirstPersonEnabled)
+        end
+        if BypassFPKey and input.KeyCode == BypassFPKey then
+            toggleBypassFirstPerson(not BypassFPEnabled)
         end
     end
 end)
