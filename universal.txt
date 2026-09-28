@@ -663,6 +663,22 @@ CloseBtn.Size = UDim2.new(0, 30, 0, 30)
 CloseBtn.Position = UDim2.new(1, -30, 0, 5)
 CloseBtn.BackgroundTransparency = 1
 
+----------------------------------------------------
+-- Mouse handling while the menu is open
+--  * Menu open  -> the mouse is FREE (works in first person / shiftlock too)
+--  * Hold Right Mouse Button while the menu is open -> the game's own camera
+--    takes the mouse back so you can LOOK AROUND. Release it -> mouse is free again.
+----------------------------------------------------
+-- Invisible Modal button: while MainFrame is visible, Roblox frees the mouse.
+-- It stops working automatically when the menu is hidden.
+local ModalUnlock = Instance.new("TextButton")
+ModalUnlock.Name = "ModalUnlock"
+ModalUnlock.Text = ""
+ModalUnlock.BackgroundTransparency = 1
+ModalUnlock.Size = UDim2.new(0, 1, 0, 1)
+ModalUnlock.Modal = true
+ModalUnlock.Parent = MainFrame
+
 local function updateMouseState()
     if MainFrame.Visible then
         UserInputService.MouseBehavior = Enum.MouseBehavior.Default
@@ -674,6 +690,27 @@ local function toggleGuiVisibility()
     MainFrame.Visible = not MainFrame.Visible
     updateMouseState()
 end
+
+-- Runs right AFTER the camera script each frame.
+RunService:BindToRenderStep("CheckSystemMouseFree", Enum.RenderPriority.Camera.Value + 1, function()
+    if not MainFrame.Visible then return end
+
+    local looking = UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton2)
+
+    -- Modal ON  = mouse free.  Modal OFF (while holding RMB) = camera can rotate.
+    if ModalUnlock.Modal == looking then
+        ModalUnlock.Modal = not looking
+    end
+
+    if looking then return end   -- let the game's camera control the mouse while looking around
+
+    if UserInputService.MouseBehavior == Enum.MouseBehavior.LockCenter then
+        UserInputService.MouseBehavior = Enum.MouseBehavior.Default
+    end
+    if not UserInputService.MouseIconEnabled then
+        UserInputService.MouseIconEnabled = true
+    end
+end)
 
 CloseBtn.MouseButton1Click:Connect(toggleGuiVisibility)
 MenuToggleBtn.MouseButton1Click:Connect(toggleGuiVisibility)
