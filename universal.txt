@@ -51,6 +51,9 @@ local cframeConnection = nil
 local UnlockCameraEnabled = false
 local CameraMaxDistance = 1000
 
+local UnlockFirstPersonEnabled = false
+local SavedCameraState = nil
+
 local FullbrightEnabled = false
 local LightIntensity = 1.0
 local LightConnections = {}
@@ -98,12 +101,68 @@ RunService.RenderStepped:Connect(function()
     if UnlockCameraEnabled then
         player.CameraMaxZoomDistance = CameraMaxDistance
         player.DevEnableMouseLock = true
-        player.DevComputerCameraMode = Enum.DevComputerCameraMode.UserChoice
+        player.DevComputerCameraMode = Enum.DevComputerCameraMovementMode.UserChoice
         player.DevComputerMovementMode = Enum.DevComputerMovementMode.UserChoice
         player.CameraMode = Enum.CameraMode.Classic
         player.DevCameraOcclusionMode = Enum.DevCameraOcclusionMode.Zoom
     end
 end)
+
+-- Unlock First Person
+-- Same 5 properties as the standalone snippet, applied immediately on toggle,
+-- then re-checked a few times per second (only writes when a value was changed back).
+local function setPlayerProp(name, value)
+    local ok, err = pcall(function()
+        if player[name] ~= value then
+            player[name] = value
+        end
+    end)
+    if not ok then
+        warn("[Check System] Unlock First Person failed on " .. name .. ": " .. tostring(err))
+    end
+end
+
+local function applyFirstPersonUnlock()
+    setPlayerProp("DevEnableMouseLock", true)                                          -- unlock shiftlock
+    setPlayerProp("DevComputerCameraMode", Enum.DevComputerCameraMovementMode.UserChoice)      -- unlock camera mode (pc)
+    setPlayerProp("DevComputerMovementMode", Enum.DevComputerMovementMode.UserChoice)  -- unlock movement mode (pc)
+    setPlayerProp("CameraMode", Enum.CameraMode.Classic)                               -- unlock first/third person
+    setPlayerProp("DevCameraOcclusionMode", Enum.DevCameraOcclusionMode.Zoom)          -- enable camera zooming
+    if player.CameraMinZoomDistance > 0.5 then
+        setPlayerProp("CameraMinZoomDistance", 0.5)                                    -- allow zooming all the way in
+    end
+end
+
+local firstPersonLoopToken = 0
+
+local function toggleUnlockFirstPerson(state)
+    if state and not UnlockFirstPersonEnabled then
+        SavedCameraState = {
+            MinZoom = player.CameraMinZoomDistance,
+            CameraMode = player.CameraMode,
+        }
+    elseif not state and UnlockFirstPersonEnabled and SavedCameraState then
+        pcall(function()
+            player.CameraMinZoomDistance = SavedCameraState.MinZoom
+            player.CameraMode = SavedCameraState.CameraMode
+        end)
+        SavedCameraState = nil
+    end
+
+    UnlockFirstPersonEnabled = state
+    firstPersonLoopToken += 1
+
+    if state then
+        applyFirstPersonUnlock()          -- immediate, exactly like the standalone script
+        local myToken = firstPersonLoopToken
+        task.spawn(function()
+            while myToken == firstPersonLoopToken do
+                task.wait(0.25)           -- re-assert without fighting the game every frame
+                applyFirstPersonUnlock()
+            end
+        end)
+    end
+end
 
 ----------------------------------------------------
 -- 2. World & Fullbright System
@@ -273,12 +332,12 @@ end
 
 ----------------------------------------------------
 -- 5. Master ESP (Optimized, event-driven)
--- แทนที่ Section 5 เดิมทั้งหมด (cleanESP, updateESPState และ loop task.spawn เดิม)
+-- Replaces the old Section 5 (cleanESP, updateESPState and the old task.spawn loop)
 ----------------------------------------------------
-_G.ESPMaxDistance = _G.ESPMaxDistance or 2000   -- ระยะสูงสุดที่แสดง (studs)
+_G.ESPMaxDistance = _G.ESPMaxDistance or 2000   -- max render distance (studs)
 
-local ESP_REFRESH_RATE = 0.3     -- วินาที/รอบ (แทนการสแกน Workspace ทุก 1 วินาที)
-local MAX_HIGHLIGHTS   = 30      -- Roblox แสดง Highlight พร้อมกันได้ ~31 อัน
+local ESP_REFRESH_RATE = 0.3     -- seconds per refresh (replaces the full Workspace scan every second)
+local MAX_HIGHLIGHTS   = 30      -- Roblox renders about 31 Highlights at once
 local ITEM_COLOR       = Color3.fromRGB(0, 255, 200)
 
 local espRunning   = false
@@ -394,7 +453,7 @@ local function refreshESP()
         end
     end
 
-    -- ใกล้สุดก่อน แล้วจำกัดจำนวน Highlight
+    -- nearest first, then cap the number of Highlights
     table.sort(visible, function(a, b) return a.dist < b.dist end)
 
     for i, e in ipairs(visible) do
@@ -423,7 +482,7 @@ local function refreshESP()
         if showName then
             e.label.TextColor3 = color
             text = string.format("%s [%dm]", text, math.floor(e.dist))
-            if text ~= e.lastText then   -- อัปเดต Text เฉพาะตอนเปลี่ยน
+            if text ~= e.lastText then   -- only write Text when it changed
                 e.label.Text = text
                 e.lastText = text
             end
@@ -447,9 +506,9 @@ local function setESPEnabled(state)
 
     espFolder = Instance.new("Folder")
     espFolder.Name = "ESPContainer"
-    espFolder.Parent = camera          -- ไม่ยัด Instance เข้า Character/Part ของเกมอีกต่อไป
+    espFolder.Parent = camera          -- no more parenting instances into the game's characters/parts
 
-    -- Event-driven: ติดตามเฉพาะสิ่งที่เพิ่ม/ลบ ไม่ต้อง GetDescendants ซ้ำ
+    -- Event-driven: only track what is added/removed, no repeated GetDescendants
     table.insert(espConns, Workspace.DescendantAdded:Connect(considerInstance))
     table.insert(espConns, Workspace.DescendantRemoving:Connect(function(inst)
         if espTracked[inst] then
@@ -461,7 +520,7 @@ local function setESPEnabled(state)
 
     local myToken = espToken
     task.spawn(function()
-        -- สแกนครั้งแรกแบบแบ่งเป็น chunk กัน FPS ตก
+        -- initial scan in chunks to avoid FPS drops
         local count = 0
         for _, inst in ipairs(Workspace:GetDescendants()) do
             if myToken ~= espToken then return end
@@ -476,7 +535,7 @@ local function setESPEnabled(state)
     end)
 end
 
--- ชื่อเดิม: UI toggle ทุกตัวเรียกฟังก์ชันนี้อยู่แล้ว
+-- same name as before: every UI toggle already calls this function
 local function updateESPState()
     setESPEnabled(_G.ESPEnabled)
     if espRunning then refreshESP() end
@@ -569,7 +628,7 @@ Subtitle.Size = UDim2.new(0, 300, 0, 18)
 Subtitle.BackgroundTransparency = 1
 
 local CloseBtn = Instance.new("TextButton", Header)
-CloseBtn.Text = "×"
+CloseBtn.Text = "\u{00D7}"
 CloseBtn.Font = Enum.Font.GothamBold
 CloseBtn.TextSize = 24
 CloseBtn.TextColor3 = TEXT_SUB
@@ -860,6 +919,7 @@ end
 ----------------------------------------------------
 addToggle(camPage, "Unlock Camera", "Unlock camera distance limits", false, function(s) UnlockCameraEnabled = s end)
 addInput(camPage, "Camera Distance", "Max camera zoom distance", CameraMaxDistance, function(v) CameraMaxDistance = v end)
+addToggle(camPage, "Unlock First Person", "Unlock first person, shiftlock and zoom", false, function(s) toggleUnlockFirstPerson(s) end)
 
 addToggle(movePage, "Infinite Jump", "Jump infinitely in the air", false, function(s) InfiniteJumpEnabled = s end)
 addToggle(movePage, "Enable WalkSpeed", "Apply custom WalkSpeed", false, function(s) WalkSpeedEnabled = s; updateMovement() end)
@@ -915,7 +975,7 @@ plTitle.TextXAlignment = Enum.TextXAlignment.Left
 plTitle.BackgroundTransparency = 1
 
 local refreshBtn = Instance.new("TextButton", PlayerListFrame)
-refreshBtn.Text = "↻"
+refreshBtn.Text = "\u{21BB}"
 refreshBtn.Font = Enum.Font.GothamBold
 refreshBtn.TextSize = 14
 refreshBtn.TextColor3 = TEXT_SUB
