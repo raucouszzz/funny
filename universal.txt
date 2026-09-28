@@ -663,7 +663,7 @@ Header.Position = UDim2.new(0, 20, 0, 10)
 Header.BackgroundTransparency = 1
 
 local Title = Instance.new("TextLabel", Header)
-Title.Text = "Check System v.1.8 (Fixed & Optimized)"
+Title.Text = "Check System v.1.92 (Fixed & Optimized)"
 Title.Font = Enum.Font.GothamBold
 Title.TextSize = 18
 Title.TextColor3 = TEXT_MAIN
@@ -1878,6 +1878,6 @@ loadDefaultConfig()
 
 StarterGui:SetCore("SendNotification", {
     Title = "Check System",
-    Text = "Updated & ESP Fixed successfully!",
+    Text = "Script executed successfully!",
     Duration = 5
 })
