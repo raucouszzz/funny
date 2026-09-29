@@ -1,5 +1,5 @@
 -- Check System Integrated Client (Master ESP, NPC HP & Item Interact ESP Edition)
--- Fully Optimized & Fixed Toggle State Control System (v1.93 Patch)
+-- Fully Optimized & Fixed Toggle State Control System (v1.94 Patch - Spectate System Edition)
 
 local Players = game:GetService("Players")
 local Lighting = game:GetService("Lighting")
@@ -478,6 +478,124 @@ local function toggleFlight(state)
 end
 
 ----------------------------------------------------
+-- 4.5 Spectate System
+--  * Uses the game's own default camera (CameraSubject), so it works
+--    even inside games with a custom camera script (unlike Bypass FP,
+--    which fully replaces the camera — don't run both at once).
+--  * Auto-reconnects when the target respawns, and stops automatically
+--    if the target leaves the game.
+----------------------------------------------------
+local SpectateEnabled = false
+local SpectateTarget = nil       -- Player instance being watched, or nil
+local SpectateSaved = nil        -- { CameraType, CameraSubject } of your own camera
+local spectateConns = {}
+local setSpectateTarget          -- forward declaration
+
+local function spectateDisconnectAll()
+    for _, c in ipairs(spectateConns) do c:Disconnect() end
+    table.clear(spectateConns)
+end
+
+local function stopSpectate(restoreCamera)
+    spectateDisconnectAll()
+    SpectateTarget = nil
+    if restoreCamera and SpectateSaved then
+        local cam = Workspace.CurrentCamera
+        if cam then
+            pcall(function()
+                cam.CameraSubject = SpectateSaved.CameraSubject
+                cam.CameraType = SpectateSaved.CameraType
+            end)
+        end
+        SpectateSaved = nil
+    end
+    if toggleUiUpdaters["Spectate Mode"] then
+        -- don't force the toggle off here; only camera state is reset
+    end
+end
+
+local function spectateApply(target)
+    local cam = Workspace.CurrentCamera
+    local char = target.Character
+    if not cam or not char then return end
+    local hum = char:FindFirstChildOfClass("Humanoid") or char:WaitForChild("Humanoid", 3)
+    if not hum then return end
+
+    spectateDisconnectAll()
+
+    if not SpectateSaved then
+        SpectateSaved = { CameraType = cam.CameraType, CameraSubject = cam.CameraSubject }
+    end
+
+    cam.CameraType = Enum.CameraType.Custom
+    cam.CameraSubject = hum
+    SpectateTarget = target
+
+    table.insert(spectateConns, target.CharacterAdded:Connect(function(newChar)
+        if SpectateTarget ~= target then return end
+        task.spawn(function()
+            local h = newChar:FindFirstChildOfClass("Humanoid") or newChar:WaitForChild("Humanoid", 5)
+            if h and SpectateTarget == target then
+                local c = Workspace.CurrentCamera
+                if c then c.CameraSubject = h end
+            end
+        end)
+    end))
+
+    table.insert(spectateConns, Players.PlayerRemoving:Connect(function(p)
+        if p == target then setSpectateTarget(nil) end
+    end))
+end
+
+setSpectateTarget = function(target)
+    if target == player then target = nil end
+    if not target then
+        stopSpectate(true)
+        return
+    end
+    spectateApply(target)
+end
+
+local function toggleSpectate(state)
+    SpectateEnabled = state
+    if not state then
+        stopSpectate(true)
+    end
+    if toggleUiUpdaters["Spectate Mode"] then
+        toggleUiUpdaters["Spectate Mode"](state)
+    end
+end
+
+local function spectateCycle(step)
+    if not SpectateEnabled then return end
+    local list = {}
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= player then list[#list + 1] = p end
+    end
+    if #list == 0 then return end
+
+    local idx = 1
+    if SpectateTarget then
+        for i, p in ipairs(list) do
+            if p == SpectateTarget then idx = i break end
+        end
+    end
+    idx = ((idx - 1 + step) % #list) + 1
+    setSpectateTarget(list[idx])
+    if SpectateUiRefresh then SpectateUiRefresh() end
+end
+
+-- Reapply the camera if YOUR OWN character respawns while spectating
+player.CharacterAdded:Connect(function()
+    if SpectateEnabled and SpectateTarget then
+        task.wait(0.5)
+        if SpectateEnabled and SpectateTarget then
+            spectateApply(SpectateTarget)
+        end
+    end
+end)
+
+----------------------------------------------------
 -- 5. Master ESP (Optimized, event-driven)
 -- Replaces the old Section 5 (cleanESP, updateESPState and the old task.spawn loop)
 ----------------------------------------------------
@@ -803,7 +921,7 @@ Header.Position = UDim2.new(0, 20, 0, 10)
 Header.BackgroundTransparency = 1
 
 local Title = Instance.new("TextLabel", Header)
-Title.Text = "Check System v.1.93"
+Title.Text = "Check System v.1.94"
 Title.Font = Enum.Font.GothamBold
 Title.TextSize = 18
 Title.TextColor3 = TEXT_MAIN
@@ -910,7 +1028,7 @@ local PANIC_FEATURES = {
     "Infinite Jump", "Enable WalkSpeed", "CFrame Walk", "Enable JumpPower",
     "Instant Interact", "Fullbright", "Remove Fog", "FOV Changer",
     "Master ESP", "Auto Teleport", "Ctrl + Click TP",
-    "NoClip", "Enable Flight",
+    "NoClip", "Enable Flight", "Spectate Mode",
 }
 
 local function setPanicMode(state)
@@ -1244,6 +1362,7 @@ local espPage = createPage("ESP")
 local tpPage = createPage("Teleport")
 local sysPage = createPage("Checks")
 local settingsPage = createPage("Settings")
+local spectatePage = createPage("Spectate")
 local configPage = createPage("Config")
 
 addTabButton("Camera")
@@ -1253,6 +1372,7 @@ addTabButton("ESP")
 addTabButton("Teleport")
 addTabButton("Checks")
 addTabButton("Settings")
+addTabButton("Spectate")
 addTabButton("Config")
 
 -- Config registry: every toggle / input / keybind / hex box registers itself here
@@ -2014,6 +2134,135 @@ addButton(tpPage, "Teleport to Saved Position", function()
     end
 end)
 
+do  -- Spectate UI: toggle + specific player picker + cycle + refresh
+    local rows = {}
+
+    addToggle(spectatePage, "Spectate Mode", "Watch another player through their camera", false, function(s)
+        toggleSpectate(s)
+    end)
+    addKeybind(spectatePage, "Spectate Toggle Keybind", "Press key to toggle Spectate Mode", nil, function(k)
+        SpectateToggleKey = k
+    end)
+    addKeybind(spectatePage, "Next Target Keybind", "Press key to spectate the next player", Enum.KeyCode.RightBracket, function(k)
+        SpectateNextKey = k
+    end)
+    addKeybind(spectatePage, "Previous Target Keybind", "Press key to spectate the previous player", Enum.KeyCode.LeftBracket, function(k)
+        SpectatePrevKey = k
+    end)
+
+    local listCard = Instance.new("Frame", spectatePage)
+    listCard.Size = UDim2.new(1, -10, 0, 260)
+    listCard.BackgroundColor3 = PURPLE_CARD
+    listCard.BackgroundTransparency = 0.2
+    listCard.BorderSizePixel = 0
+    Instance.new("UICorner", listCard).CornerRadius = UDim.new(0, 8)
+
+    local listTitle = Instance.new("TextLabel", listCard)
+    listTitle.Text = "Pick a Player to Spectate"
+    listTitle.Font = Enum.Font.GothamBold
+    listTitle.TextSize = 13
+    listTitle.TextColor3 = TEXT_MAIN
+    listTitle.Position = UDim2.new(0, 12, 0, 8)
+    listTitle.Size = UDim2.new(0, 260, 0, 16)
+    listTitle.TextXAlignment = Enum.TextXAlignment.Left
+    listTitle.BackgroundTransparency = 1
+
+    local refreshBtn3 = Instance.new("TextButton", listCard)
+    refreshBtn3.Text = "Refresh"
+    refreshBtn3.Font = Enum.Font.GothamBold
+    refreshBtn3.TextSize = 11
+    refreshBtn3.TextColor3 = PURPLE_ACCENT
+    refreshBtn3.BackgroundColor3 = PURPLE_DARK
+    refreshBtn3.Size = UDim2.new(0, 64, 0, 22)
+    refreshBtn3.Position = UDim2.new(1, -74, 0, 6)
+    Instance.new("UICorner", refreshBtn3).CornerRadius = UDim.new(0, 6)
+
+    local stopBtn = Instance.new("TextButton", listCard)
+    stopBtn.Text = "Stop Spectating"
+    stopBtn.Font = Enum.Font.GothamBold
+    stopBtn.TextSize = 11
+    stopBtn.TextColor3 = PURPLE_ACCENT
+    stopBtn.BackgroundColor3 = PURPLE_DARK
+    stopBtn.Size = UDim2.new(0, 100, 0, 22)
+    stopBtn.Position = UDim2.new(1, -180, 0, 6)
+    Instance.new("UICorner", stopBtn).CornerRadius = UDim.new(0, 6)
+
+    local scroll2 = Instance.new("ScrollingFrame", listCard)
+    scroll2.Size = UDim2.new(1, -16, 1, -42)
+    scroll2.Position = UDim2.new(0, 8, 0, 34)
+    scroll2.BackgroundTransparency = 1
+    scroll2.BorderSizePixel = 0
+    scroll2.ScrollBarThickness = 3
+    scroll2.ScrollBarImageColor3 = PURPLE_PRIMARY
+    scroll2.AutomaticCanvasSize = Enum.AutomaticSize.Y
+    scroll2.CanvasSize = UDim2.new(0, 0, 0, 0)
+    local scroll2Layout = Instance.new("UIListLayout", scroll2)
+    scroll2Layout.Padding = UDim.new(0, 4)
+
+    local function rebuildSpectateList()
+        for _, c in ipairs(scroll2:GetChildren()) do
+            if not c:IsA("UIListLayout") then c:Destroy() end
+        end
+        table.clear(rows)
+
+        for _, target in ipairs(Players:GetPlayers()) do
+            if target ~= player then
+                local btn = Instance.new("TextButton", scroll2)
+                btn.Size = UDim2.new(1, 0, 0, 28)
+                btn.Font = Enum.Font.GothamBold
+                btn.TextSize = 12
+                btn.TextXAlignment = Enum.TextXAlignment.Left
+                btn.AutoButtonColor = false
+                btn.Text = "  " .. target.DisplayName .. " (@" .. target.Name .. ")"
+                Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 6)
+
+                local function paint()
+                    local on = SpectateTarget == target
+                    btn.BackgroundColor3 = on and PURPLE_PRIMARY or PURPLE_DARK
+                    btn.TextColor3 = on and TEXT_MAIN or TEXT_SUB
+                end
+                paint()
+                rows[target] = paint
+
+                btn.MouseButton1Click:Connect(function()
+                    if not SpectateEnabled then
+                        toggleUiUpdaters["Spectate Mode"](true)
+                        toggleSpectate(true)
+                    end
+                    setSpectateTarget(target)
+                    for _, p in pairs(rows) do p() end
+                end)
+            end
+        end
+
+        if next(rows) == nil then
+            local empty = Instance.new("TextLabel", scroll2)
+            empty.Size = UDim2.new(1, 0, 0, 26)
+            empty.BackgroundTransparency = 1
+            empty.Font = Enum.Font.Gotham
+            empty.TextSize = 11
+            empty.TextColor3 = TEXT_SUB
+            empty.Text = "No other players in the server."
+        end
+    end
+
+    refreshBtn3.MouseButton1Click:Connect(rebuildSpectateList)
+    stopBtn.MouseButton1Click:Connect(function()
+        setSpectateTarget(nil)
+        for _, p in pairs(rows) do p() end
+    end)
+
+    Players.PlayerAdded:Connect(rebuildSpectateList)
+    Players.PlayerRemoving:Connect(function() task.defer(rebuildSpectateList) end)
+
+    -- lets spectateCycle() refresh the highlighted row after Next/Previous
+    SpectateUiRefresh = function()
+        for _, p in pairs(rows) do p() end
+    end
+
+    rebuildSpectateList()
+end
+
 addToggle(settingsPage, "Panic Mode", "Disable ALL features + hide menu (press again to undo)", false, function(s) setPanicMode(s) end, true)
 addKeybind(settingsPage, "Panic Keybind", "Press key to toggle Panic Mode", Ctl.panicKey, function(k) Ctl.panicKey = k end)
 addToggle(settingsPage, "Restore After Panic", "Turn features back on when Panic ends", true, function(s) Ctl.restore = s end)
@@ -2258,45 +2507,37 @@ do
         return card
     end
 
-    -- Config name box
-    local nameCard = makeCard(50)
-    local nameTitle = Instance.new("TextLabel", nameCard)
-    nameTitle.Text = "Config Name"
-    nameTitle.Font = Enum.Font.GothamBold
-    nameTitle.TextSize = 13
-    nameTitle.TextColor3 = TEXT_MAIN
-    nameTitle.Position = UDim2.new(0, 12, 0, 8)
-    nameTitle.Size = UDim2.new(0, 200, 0, 16)
-    nameTitle.TextXAlignment = Enum.TextXAlignment.Left
-    nameTitle.BackgroundTransparency = 1
+    -- Card 1: Save As New Config
+    local card1 = makeCard(50)
 
-    local nameDesc = Instance.new("TextLabel", nameCard)
-    nameDesc.Text = "Name used by Save Config (new config)"
-    nameDesc.Font = Enum.Font.Gotham
-    nameDesc.TextSize = 10
-    nameDesc.TextColor3 = TEXT_SUB
-    nameDesc.Position = UDim2.new(0, 12, 0, 26)
-    nameDesc.Size = UDim2.new(0, 200, 0, 14)
-    nameDesc.TextXAlignment = Enum.TextXAlignment.Left
-    nameDesc.BackgroundTransparency = 1
+    local newBox = Instance.new("TextBox", card1)
+    newBox.Size = UDim2.new(1, -120, 0, 30)
+    newBox.Position = UDim2.new(0, 10, 0, 10)
+    newBox.PlaceholderText = "New config name..."
+    newBox.PlaceholderColor3 = TEXT_SUB
+    newBox.Text = ""
+    newBox.Font = Enum.Font.Gotham
+    newBox.TextSize = 12
+    newBox.TextColor3 = TEXT_MAIN
+    newBox.BackgroundColor3 = PURPLE_DARK
+    newBox.ClearTextOnFocus = false
+    Instance.new("UICorner", newBox).CornerRadius = UDim.new(0, 6)
 
-    local nameBox = Instance.new("TextBox", nameCard)
-    nameBox.Size = UDim2.new(0, 180, 0, 26)
-    nameBox.Position = UDim2.new(1, -190, 0, 12)
-    nameBox.Text = ""
-    nameBox.PlaceholderText = "My Config"
-    nameBox.PlaceholderColor3 = TEXT_SUB
-    nameBox.ClearTextOnFocus = false
-    nameBox.Font = Enum.Font.GothamBold
-    nameBox.TextSize = 12
-    nameBox.TextColor3 = PURPLE_ACCENT
-    nameBox.BackgroundColor3 = PURPLE_DARK
-    Instance.new("UICorner", nameBox).CornerRadius = UDim.new(0, 6)
+    local saveBtn = Instance.new("TextButton", card1)
+    saveBtn.Size = UDim2.new(0, 90, 0, 30)
+    saveBtn.Position = UDim2.new(1, -100, 0, 10)
+    saveBtn.Text = "Save New"
+    saveBtn.Font = Enum.Font.GothamBold
+    saveBtn.TextSize = 12
+    saveBtn.TextColor3 = TEXT_MAIN
+    saveBtn.BackgroundColor3 = PURPLE_PRIMARY
+    Instance.new("UICorner", saveBtn).CornerRadius = UDim.new(0, 6)
 
-    -- Config list
-    local listCard = makeCard(160)
-    local listTitle = Instance.new("TextLabel", listCard)
-    listTitle.Text = "Select Config"
+    -- Card 2: Saved Configs List
+    local card2 = makeCard(200)
+
+    local listTitle = Instance.new("TextLabel", card2)
+    listTitle.Text = "Saved Configs"
     listTitle.Font = Enum.Font.GothamBold
     listTitle.TextSize = 13
     listTitle.TextColor3 = TEXT_MAIN
@@ -2305,244 +2546,244 @@ do
     listTitle.TextXAlignment = Enum.TextXAlignment.Left
     listTitle.BackgroundTransparency = 1
 
-    local refreshListBtn = Instance.new("TextButton", listCard)
-    refreshListBtn.Text = "Refresh"
-    refreshListBtn.Font = Enum.Font.GothamBold
-    refreshListBtn.TextSize = 11
-    refreshListBtn.TextColor3 = PURPLE_ACCENT
-    refreshListBtn.BackgroundColor3 = PURPLE_DARK
-    refreshListBtn.Size = UDim2.new(0, 64, 0, 22)
-    refreshListBtn.Position = UDim2.new(1, -74, 0, 6)
-    Instance.new("UICorner", refreshListBtn).CornerRadius = UDim.new(0, 6)
+    local scroll = Instance.new("ScrollingFrame", card2)
+    scroll.Size = UDim2.new(1, -16, 1, -34)
+    scroll.Position = UDim2.new(0, 8, 0, 28)
+    scroll.BackgroundTransparency = 1
+    scroll.BorderSizePixel = 0
+    scroll.ScrollBarThickness = 3
+    scroll.ScrollBarImageColor3 = PURPLE_PRIMARY
+    scroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+    scroll.CanvasSize = UDim2.new(0, 0, 0, 0)
 
-    local listScroll = Instance.new("ScrollingFrame", listCard)
-    listScroll.Position = UDim2.new(0, 8, 0, 34)
-    listScroll.Size = UDim2.new(1, -16, 1, -42)
-    listScroll.BackgroundColor3 = PURPLE_DARK
-    listScroll.BackgroundTransparency = 0.3
-    listScroll.BorderSizePixel = 0
-    listScroll.ScrollBarThickness = 3
-    listScroll.ScrollBarImageColor3 = PURPLE_PRIMARY
-    listScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
-    listScroll.CanvasSize = UDim2.new(0, 0, 0, 0)
-    Instance.new("UICorner", listScroll).CornerRadius = UDim.new(0, 6)
-    local listLayout = Instance.new("UIListLayout", listScroll)
-    listLayout.Padding = UDim.new(0, 4)
-    local listPad = Instance.new("UIPadding", listScroll)
-    listPad.PaddingTop = UDim.new(0, 4)
-    listPad.PaddingLeft = UDim.new(0, 4)
-    listPad.PaddingRight = UDim.new(0, 4)
-    listPad.PaddingBottom = UDim.new(0, 4)
+    local scrollLayout = Instance.new("UIListLayout", scroll)
+    scrollLayout.Padding = UDim.new(0, 4)
 
-    -- Status
-    local statusCard = makeCard(52)
-    local statusLine = Instance.new("TextLabel", statusCard)
-    statusLine.Font = Enum.Font.GothamBold
-    statusLine.TextSize = 12
-    statusLine.TextColor3 = TEXT_MAIN
-    statusLine.Position = UDim2.new(0, 12, 0, 6)
-    statusLine.Size = UDim2.new(1, -24, 0, 18)
-    statusLine.TextXAlignment = Enum.TextXAlignment.Left
-    statusLine.BackgroundTransparency = 1
+    -- Card 3: Selected Config Controls
+    local card3 = makeCard(100)
 
-    local messageLine = Instance.new("TextLabel", statusCard)
-    messageLine.Font = Enum.Font.Gotham
-    messageLine.TextSize = 11
-    messageLine.TextColor3 = TEXT_SUB
-    messageLine.Position = UDim2.new(0, 12, 0, 26)
-    messageLine.Size = UDim2.new(1, -24, 0, 22)
-    messageLine.TextXAlignment = Enum.TextXAlignment.Left
-    messageLine.TextYAlignment = Enum.TextYAlignment.Top
-    messageLine.TextWrapped = true
-    messageLine.BackgroundTransparency = 1
-    messageLine.Text = hasFS
-        and ("Saving to executor workspace: " .. CONFIG_FOLDER)
-        or "No file access in this executor: configs last only until you leave the game."
+    local selTitle = Instance.new("TextLabel", card3)
+    selTitle.Text = "Selected: None"
+    selTitle.Font = Enum.Font.GothamBold
+    selTitle.TextSize = 12
+    selTitle.TextColor3 = TEXT_SUB
+    selTitle.Position = UDim2.new(0, 12, 0, 8)
+    selTitle.Size = UDim2.new(1, -24, 0, 16)
+    selTitle.TextXAlignment = Enum.TextXAlignment.Left
+    selTitle.BackgroundTransparency = 1
 
-    local function say(text)
-        messageLine.Text = text
-        pcall(function()
-            StarterGui:SetCore("SendNotification", { Title = "Config", Text = text, Duration = 3 })
+    local function makeBtn(parent, text, pos, size, bg)
+        local b = Instance.new("TextButton", parent)
+        b.Text = text
+        b.Font = Enum.Font.GothamBold
+        b.TextSize = 11
+        b.TextColor3 = TEXT_MAIN
+        b.BackgroundColor3 = bg
+        b.Position = pos
+        b.Size = size
+        Instance.new("UICorner", b).CornerRadius = UDim.new(0, 6)
+        return b
+    end
+
+    local loadBtn     = makeBtn(card3, "Load",      UDim2.new(0, 10,  0, 32), UDim2.new(0.23, -6, 0, 28), PURPLE_PRIMARY)
+    local overwriteBtn= makeBtn(card3, "Overwrite", UDim2.new(0.23, 8, 0, 32), UDim2.new(0.27, -6, 0, 28), PURPLE_CARD)
+    local defaultBtn  = makeBtn(card3, "Set Default",UDim2.new(0.50, 6, 0, 32), UDim2.new(0.27, -6, 0, 28), PURPLE_CARD)
+    local deleteBtn   = makeBtn(card3, "Delete",   UDim2.new(0.77, 4, 0, 32), UDim2.new(0.23, -6, 0, 28), Color3.fromRGB(150, 40, 60))
+
+    local statusLbl = Instance.new("TextLabel", card3)
+    statusLbl.Text = ""
+    statusLbl.Font = Enum.Font.Gotham
+    statusLbl.TextSize = 10
+    statusLbl.TextColor3 = PURPLE_ACCENT
+    statusLbl.Position = UDim2.new(0, 12, 0, 68)
+    statusLbl.Size = UDim2.new(1, -24, 0, 20)
+    statusLbl.TextXAlignment = Enum.TextXAlignment.Left
+    statusLbl.BackgroundTransparency = 1
+
+    local function setStatus(msg, isErr)
+        statusLbl.TextColor3 = isErr and Color3.fromRGB(255, 90, 90) or PURPLE_ACCENT
+        statusLbl.Text = msg
+        task.delay(4, function()
+            if statusLbl.Text == msg then statusLbl.Text = "" end
         end)
     end
 
-    local function updateStatus()
-        statusLine.Text = "Selected: " .. (selected or "none") .. "   |   Default: " .. (getDefault() or "none")
+    local rebuildList   -- forward declaration
+
+    local function setSelected(name)
+        selected = name
+        local def = getDefault()
+        if not selected then
+            selTitle.Text = "Selected: None"
+        elseif selected == def then
+            selTitle.Text = "Selected: " .. selected .. "  (DEFAULT)"
+        else
+            selTitle.Text = "Selected: " .. selected
+        end
+        rebuildList()
     end
 
-    local function rebuildList()
-        for _, c in ipairs(listScroll:GetChildren()) do
-            if not c:IsA("UIListLayout") and not c:IsA("UIPadding") then c:Destroy() end
+    rebuildList = function()
+        for _, child in ipairs(scroll:GetChildren()) do
+            if not child:IsA("UIListLayout") then child:Destroy() end
         end
 
         local names = listConfigs()
-        local default = getDefault()
-        local found = false
-
-        for _, name in ipairs(names) do
-            if name == selected then found = true end
-            local btn = Instance.new("TextButton", listScroll)
-            btn.Size = UDim2.new(1, 0, 0, 26)
-            btn.Text = "  " .. name .. (name == default and "   [DEFAULT]" or "")
-            btn.Font = Enum.Font.GothamBold
-            btn.TextSize = 12
-            btn.TextXAlignment = Enum.TextXAlignment.Left
-            btn.TextColor3 = (name == selected) and TEXT_MAIN or TEXT_SUB
-            btn.BackgroundColor3 = (name == selected) and PURPLE_PRIMARY or PURPLE_CARD
-            Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 5)
-            btn.MouseButton1Click:Connect(function()
-                selected = name
-                rebuildList()
-            end)
-        end
-
-        if not found then selected = nil end
+        local def = getDefault()
 
         if #names == 0 then
-            local empty = Instance.new("TextLabel", listScroll)
-            empty.Size = UDim2.new(1, 0, 0, 26)
+            local empty = Instance.new("TextLabel", scroll)
+            empty.Size = UDim2.new(1, 0, 0, 30)
             empty.BackgroundTransparency = 1
             empty.Font = Enum.Font.Gotham
             empty.TextSize = 11
             empty.TextColor3 = TEXT_SUB
-            empty.Text = "No configs saved yet"
-        end
-
-        updateStatus()
-    end
-
-    refreshListBtn.MouseButton1Click:Connect(rebuildList)
-
-    ------------------------------------------------
-    -- Actions
-    ------------------------------------------------
-    addButton(configPage, "Save Config", function()
-        local name = sanitizeName(nameBox.Text)
-        if name == "" then
-            say("Type a config name first.")
+            empty.Text = "No saved configs found."
             return
         end
-        if configExists(name) then
-            say('"' .. name .. '" already exists. Select it in the list and use Overwrite Config.')
+
+        for _, name in ipairs(names) do
+            local item = Instance.new("TextButton", scroll)
+            item.Size = UDim2.new(1, 0, 0, 28)
+            item.Font = Enum.Font.GothamBold
+            item.TextSize = 11
+            item.TextXAlignment = Enum.TextXAlignment.Left
+            item.AutoButtonColor = false
+
+            local tag = (name == def) and "  [DEFAULT]" or ""
+            item.Text = "   " .. name .. tag
+
+            local isSel = (name == selected)
+            item.BackgroundColor3 = isSel and PURPLE_PRIMARY or PURPLE_DARK
+            item.TextColor3 = isSel and TEXT_MAIN or TEXT_SUB
+            Instance.new("UICorner", item).CornerRadius = UDim.new(0, 6)
+
+            item.MouseButton1Click:Connect(function()
+                setSelected(name)
+            end)
+        end
+    end
+
+    saveBtn.MouseButton1Click:Connect(function()
+        local name = sanitizeName(newBox.Text)
+        if name == "" then
+            setStatus("Enter a valid config name", true)
             return
         end
         local ok, err = writeConfig(name, collectSettings())
         if ok then
-            selected = name
-            rebuildList()
-            say('Saved config "' .. name .. '".')
+            newBox.Text = ""
+            setSelected(name)
+            setStatus("Saved config '" .. name .. "'")
         else
-            say("Save failed: " .. tostring(err))
+            setStatus("Save failed: " .. tostring(err), true)
         end
     end)
 
-    addButton(configPage, "Overwrite Config", function()
-        if not selected then
-            say("Select a config from the list first.")
-            return
+    loadBtn.MouseButton1Click:Connect(function()
+        if not selected then setStatus("Select a config first", true); return end
+        local data, err = readConfig(selected)
+        if data then
+            applySettings(data)
+            setStatus("Loaded '" .. selected .. "'")
+        else
+            setStatus("Load failed: " .. tostring(err), true)
         end
+    end)
+
+    overwriteBtn.MouseButton1Click:Connect(function()
+        if not selected then setStatus("Select a config first", true); return end
         local ok, err = writeConfig(selected, collectSettings())
         if ok then
-            rebuildList()
-            say('Overwrote config "' .. selected .. '".')
+            setStatus("Overwrote '" .. selected .. "'")
         else
-            say("Overwrite failed: " .. tostring(err))
+            setStatus("Overwrite failed: " .. tostring(err), true)
         end
     end)
 
-    addButton(configPage, "Load Config", function()
-        if not selected then
-            say("Select a config from the list first.")
-            return
-        end
-        local data, err = readConfig(selected)
-        if not data then
-            say("Load failed: " .. tostring(err))
-            return
-        end
-        if applySettings(data) then
-            say('Loaded config "' .. selected .. '".')
-        else
-            say("Failed to apply settings.")
-        end
+    defaultBtn.MouseButton1Click:Connect(function()
+        if not selected then setStatus("Select a config first", true); return end
+        setDefault(selected)
+        setSelected(selected)
+        setStatus("Set '" .. selected .. "' as default")
     end)
 
-    addButton(configPage, "Set As Default Config", function()
-        if not selected then
-            say("Select a config from the list first.")
-            return
-        end
-        local ok, err = setDefault(selected)
-        if ok then
-            rebuildList()
-            say('"' .. selected .. '" is now the default config.')
+    deleteBtn.MouseButton1Click:Connect(function()
+        if not selected then setStatus("Select a config first", true); return end
+        local target = selected
+        if hasFS then
+            pcall(delfile, configPath(target))
+            if getDefault() == target then pcall(delfile, DEFAULT_FILE) end
         else
-            say("Set default failed: " .. tostring(err))
+            memConfigs[target] = nil
+            if memDefault == target then memDefault = nil end
         end
-    end)
-
-    addButton(configPage, "Clear Default Config", function()
-        setDefault("")
-        rebuildList()
-        say("Default config cleared.")
+        setSelected(nil)
+        setStatus("Deleted '" .. target .. "'")
     end)
 
     loadDefaultConfig = function()
-        local defName = getDefault()
-        if defName then
-            local data = readConfig(defName)
+        local def = getDefault()
+        if def then
+            local data = readConfig(def)
             if data then applySettings(data) end
         end
     end
 
-    rebuildList()
-    task.defer(loadDefaultConfig)
+    setSelected(getDefault())
 end
 
+-- Auto-load default config on startup
+task.spawn(loadDefaultConfig)
+
 ----------------------------------------------------
--- 9. Hotkey Listeners & Global Hotkey Controller
+-- 9. Keybind Listener & Menu Hotkeys
 ----------------------------------------------------
 UserInputService.InputBegan:Connect(function(input, gpe)
-    if gpe then return end
-    
-    if KeybindListening then return end   -- currently binding a key
+    if KeybindListening then return end
 
-    -- Panic key always works (even while the menu is hidden)
+    -- Panic Mode hotkey (works even while typing / in gpe)
     if Ctl.panicKey and input.KeyCode == Ctl.panicKey then
         setPanicMode(not Ctl.panicActive)
         return
     end
-    if Ctl.panicActive then return end    -- every other hotkey is blocked during Panic
+
+    if Ctl.panicActive then return end   -- all other hotkeys blocked during Panic
+    if gpe then return end
 
     if Ctl.menuKey and input.KeyCode == Ctl.menuKey then
         toggleGuiVisibility()
     end
-
-    if FirstPersonKey and input.KeyCode == FirstPersonKey then
-        toggleUnlockFirstPerson(not UnlockFirstPersonEnabled)
-    end
-
-    if BypassFPKey and input.KeyCode == BypassFPKey then
-        toggleBypassFirstPerson(not BypassFPEnabled)
-    end
-
-    if FullbrightKey and input.KeyCode == FullbrightKey then
-        toggleFullbright(not FullbrightEnabled)
-    end
-
-    if MasterESPKey and input.KeyCode == MasterESPKey then
-        setMasterESP(not _G.ESPEnabled)
-    end
-
     if AutoTpKey and input.KeyCode == AutoTpKey then
         setAutoTeleport(not autoTpEnabled)
     end
-
+    if FullbrightKey and input.KeyCode == FullbrightKey then
+        toggleFullbright(not FullbrightEnabled)
+    end
+    if MasterESPKey and input.KeyCode == MasterESPKey then
+        setMasterESP(not _G.ESPEnabled)
+    end
+    if FirstPersonKey and input.KeyCode == FirstPersonKey then
+        toggleUnlockFirstPerson(not UnlockFirstPersonEnabled)
+    end
+    if BypassFPKey and input.KeyCode == BypassFPKey then
+        toggleBypassFirstPerson(not BypassFPEnabled)
+    end
     if NoclipKey and input.KeyCode == NoclipKey then
         toggleNoclip(not NoclipState)
     end
-
     if FlightKey and input.KeyCode == FlightKey then
         toggleFlight(not FlightState)
+    end
+
+    if SpectateToggleKey and input.KeyCode == SpectateToggleKey then
+        toggleUiUpdaters["Spectate Mode"](not SpectateEnabled)
+        toggleSpectate(not SpectateEnabled)
+    end
+    if SpectateNextKey and input.KeyCode == SpectateNextKey then
+        spectateCycle(1)
+    end
+    if SpectatePrevKey and input.KeyCode == SpectatePrevKey then
+        spectateCycle(-1)
     end
 end)
