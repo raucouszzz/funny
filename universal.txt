@@ -1,5 +1,5 @@
 -- Check System Integrated Client (Master ESP, NPC HP, Item Interact & Ghost ESP Edition)
--- Fully Optimized & Fixed Toggle State Control System (v1.94 Patch - Spectate System Edition + Keybind Config)
+-- v1.95 Patch - Merged Player ESP + Ghost ESP fix
 
 local Players = game:GetService("Players")
 local Lighting = game:GetService("Lighting")
@@ -30,20 +30,20 @@ _G.ESPEnabled = false
 _G.ESPShowName = true
 _G.ESPShowItemName = true
 _G.ESPIgnorePlayers = false
-_G.ESPIgnoreNPCs = true                     -- เปิด Ignore Entities ไว้ (ใช้ Ghost ESP แทน)
+_G.ESPIgnoreNPCs = true                     -- Ignore normal NPCs (Ghost ESP has its own toggle)
 _G.ESPIgnoreGhosts = false
 _G.ESPIgnoreItems = false
+_G.GhostColor = Color3.fromRGB(255, 0, 0)
 _G.FriendColor = Color3.fromRGB(160, 90, 255)
 _G.EnemyColor = Color3.fromRGB(255, 60, 60)
 _G.EntityColor = Color3.fromRGB(255, 170, 0)
-_G.GhostColor = Color3.fromRGB(255, 0, 0)
 _G.UseTeamColor = true
-_G.PlayerColor = nil                        
-_G.ItemColor = Color3.fromRGB(0, 255, 200)  
+_G.PlayerColor = nil
+_G.ItemColor = Color3.fromRGB(0, 255, 200)
 _G.ESPNameTextSize = 14
 _G.ESPItemTextSize = 13
-_G.ESPFillOpacity = 0.5                     
-_G.ESPOutlineOpacity = 1                    
+_G.ESPFillOpacity = 0.5
+_G.ESPOutlineOpacity = 1
 
 local WalkSpeedEnabled = false
 local CustomWalkSpeed = 32
@@ -92,8 +92,8 @@ local FlightKey = nil
 
 local BypassFPEnabled = false
 local BypassFPKey = nil
-local BypassSensitivity = 0.25     
-local BypassMaxZoom = 60           
+local BypassSensitivity = 0.25
+local BypassMaxZoom = 60
 local ShowCursorEnabled = true
 
 ----------------------------------------------------
@@ -140,13 +140,13 @@ local function setPlayerProp(name, value)
 end
 
 local function applyFirstPersonUnlock()
-    setPlayerProp("DevEnableMouseLock", true)                                          
-    setPlayerProp("DevComputerCameraMode", Enum.DevComputerCameraMovementMode.UserChoice)      
-    setPlayerProp("DevComputerMovementMode", Enum.DevComputerMovementMode.UserChoice)  
-    setPlayerProp("CameraMode", Enum.CameraMode.Classic)                               
-    setPlayerProp("DevCameraOcclusionMode", Enum.DevCameraOcclusionMode.Zoom)          
+    setPlayerProp("DevEnableMouseLock", true)
+    setPlayerProp("DevComputerCameraMode", Enum.DevComputerCameraMovementMode.UserChoice)
+    setPlayerProp("DevComputerMovementMode", Enum.DevComputerMovementMode.UserChoice)
+    setPlayerProp("CameraMode", Enum.CameraMode.Classic)
+    setPlayerProp("DevCameraOcclusionMode", Enum.DevCameraOcclusionMode.Zoom)
     if player.CameraMinZoomDistance > 0.5 then
-        setPlayerProp("CameraMinZoomDistance", 0.5)                                    
+        setPlayerProp("CameraMinZoomDistance", 0.5)
     end
 end
 
@@ -170,11 +170,11 @@ local function toggleUnlockFirstPerson(state)
     firstPersonLoopToken += 1
 
     if state then
-        applyFirstPersonUnlock()          
+        applyFirstPersonUnlock()
         local myToken = firstPersonLoopToken
         task.spawn(function()
             while myToken == firstPersonLoopToken do
-                task.wait(0.25)           
+                task.wait(0.25)
                 applyFirstPersonUnlock()
             end
         end)
@@ -195,7 +195,7 @@ local function applyFullbright()
     Lighting.ColorShift_Top = Color3.new(LightIntensity, LightIntensity, LightIntensity)
     Lighting.FogEnd = 1000000
     Lighting.FogStart = 0
-    
+
     for _, v in ipairs(Lighting:GetChildren()) do
         if v:IsA("Atmosphere") then v:Destroy() end
     end
@@ -358,11 +358,11 @@ end
 
 local function toggleCFrameWalk(state)
     CFrameWalkEnabled = state
-    if cframeConnection then 
-        cframeConnection:Disconnect() 
-        cframeConnection = nil 
+    if cframeConnection then
+        cframeConnection:Disconnect()
+        cframeConnection = nil
     end
-    
+
     if CFrameWalkEnabled then
         cframeConnection = RunService.Heartbeat:Connect(function(deltaTime)
             local char = player.Character
@@ -388,8 +388,8 @@ local function toggleNoclip(state)
         NoclipConnection = RunService.Stepped:Connect(function()
             if player.Character then
                 for _, v in pairs(player.Character:GetDescendants()) do
-                    if v:IsA("BasePart") and v.CanCollide then 
-                        v.CanCollide = false 
+                    if v:IsA("BasePart") and v.CanCollide then
+                        v.CanCollide = false
                     end
                 end
             end
@@ -587,23 +587,37 @@ player.CharacterAdded:Connect(function()
 end)
 
 ----------------------------------------------------
--- 5. Master ESP & Ghost ESP System
+-- 5. Master ESP & Ghost ESP System (MERGED FIX)
 ----------------------------------------------------
 _G.ESPMaxDistance = _G.ESPMaxDistance or 2000
 
-local ESP_REFRESH_RATE = 0.3
-local MAX_HIGHLIGHTS   = 30
+local ESP_REFRESH_RATE   = 0.3
+local ESP_RECHECK_PERIOD = 2      -- seconds between ghost re-checks of tracked entries
+local MAX_HIGHLIGHTS     = 30
 
 local espRunning   = false
 local espToken     = 0
 local espFolder    = nil
 local espTracked   = {}
 local espConns     = {}
+local lastRecheck  = 0
+
+-- Ghost detection keywords (union of both old versions)
+local GHOST_KEYWORDS = { "ghost", "spirit", "monster", "entity", "demon", "killer", "nextbot", "phantom", "specter", "wraith", "poltergeist" }
+local GHOST_FOLDERS  = { "ghost", "monster", "entities", "entity", "enemies", "enemy", "spirit" }
+local GHOST_ATTRS    = { "monster", "isghost", "ghost", "entity", "enemy" }
+
+local function containsAny(str, list)
+    for _, k in ipairs(list) do
+        if string.find(str, k, 1, true) then return true end
+    end
+    return false
+end
 
 local function findPart(target)
     if target:IsA("BasePart") then return target end
     if target:IsA("Model") then
-        return target:FindFirstChild("Head") or target.PrimaryPart or target:FindFirstChildWhichIsA("BasePart", true)
+        return target:FindFirstChild("HumanoidRootPart") or target:FindFirstChild("Head") or target.PrimaryPart or target:FindFirstChildWhichIsA("BasePart", true)
     end
     return target:FindFirstChild("Handle") or target:FindFirstChildWhichIsA("BasePart", true)
 end
@@ -613,15 +627,43 @@ local function isInsideCharacter(inst)
     return m ~= nil and m:FindFirstChildOfClass("Humanoid") ~= nil
 end
 
-local function isGhostInstance(inst)
-    if not inst or not inst.Parent then return false end
-    local name = string.lower(inst.Name)
-    local parentName = string.lower(inst.Parent.Name)
-    if name:find("ghost") or name:find("spirit") or name:find("demon") or name:find("monster") or name:find("entity") then
+local function isInsidePlayerChar(inst)
+    local p = inst
+    while p and p ~= Workspace do
+        if Players:GetPlayerFromCharacter(p) then return true end
+        p = p.Parent
+    end
+    return false
+end
+
+local function ghostMatch(obj)
+    if not (obj:IsA("Model") or obj:IsA("BasePart")) then return false end
+    if isInsidePlayerChar(obj) then return false end
+    if obj:FindFirstAncestorOfClass("Tool") then return false end   -- items like "Spirit Box" are not ghosts
+
+    if obj:IsA("Model") and obj:FindFirstChildOfClass("AnimationController") then
         return true
     end
-    if parentName:find("ghosts") or parentName:find("monsters") or parentName:find("entities") then
+    if containsAny(string.lower(obj.Name), GHOST_KEYWORDS) then
         return true
+    end
+    for attr in pairs(obj:GetAttributes()) do
+        if containsAny(string.lower(attr), GHOST_ATTRS) then return true end
+    end
+    if obj:IsA("Model") then
+        local p = obj.Parent
+        if p and p ~= Workspace and containsAny(string.lower(p.Name), GHOST_FOLDERS) then
+            return true
+        end
+    end
+    return false
+end
+
+local function hasTrackedAncestor(inst)
+    local p = inst.Parent
+    while p and p ~= Workspace do
+        if espTracked[p] then return true end
+        p = p.Parent
     end
     return false
 end
@@ -662,35 +704,51 @@ local function createEntry(target, humanoid, isGhost)
     label.Parent = bb
 
     espTracked[target] = {
-        target = target, hum = humanoid, isGhost = isGhost, hl = hl, bb = bb, label = label,
+        target = target, hum = humanoid, ghost = isGhost or false, hl = hl, bb = bb, label = label,
         part = nil, lastText = "",
     }
 end
 
-local function considerInstance(inst)
+-- NOTE: players are now tracked too (old version wrongly excluded them)
+local function classifyInstance(inst)
     if inst:IsA("Humanoid") then
         local model = inst.Parent
         if model and model:IsA("Model") and model ~= player.Character then
-            local isGhost = isGhostInstance(model) or isGhostInstance(inst)
-            createEntry(model, inst, isGhost)
-        end
-    elseif inst:IsA("Model") then
-        if inst ~= player.Character and not Players:GetPlayerFromCharacter(inst) then
-            if isGhostInstance(inst) then
-                local hum = inst:FindFirstChildOfClass("Humanoid")
-                createEntry(inst, hum, true)
-            end
+            return model, inst
         end
     elseif inst:IsA("ProximityPrompt") or inst:IsA("ClickDetector") then
         local target = inst.Parent
         if target and target:IsA("Attachment") then target = target.Parent end
         if target and target ~= Workspace and not isInsideCharacter(target) then
-            createEntry(target, nil, false)
+            return target, nil
         end
     elseif inst:IsA("Tool") then
-        if not isInsideCharacter(inst) then createEntry(inst, nil, false) end
+        if not isInsideCharacter(inst) then return inst, nil end
+    end
+    return nil, nil
+end
+
+local function considerInstance(inst)
+    local target, hum = classifyInstance(inst)
+    if target then
+        createEntry(target, hum)
+        local e = espTracked[target]
+        if e and hum and ghostMatch(target) then
+            e.ghost = true          -- ghost that has a Humanoid
+        end
+    end
+
+    if (inst:IsA("Model") or inst:IsA("BasePart")) and ghostMatch(inst) then
+        local e = espTracked[inst]
+        if e then
+            e.ghost = true
+        elseif not hasTrackedAncestor(inst) then
+            createEntry(inst, nil, true)
+        end
     end
 end
+
+local KIND_ORDER = { Ghost = 1, Player = 2, NPC = 3, Item = 4 }
 
 local function refreshESP()
     if not espRunning then return end
@@ -698,20 +756,31 @@ local function refreshESP()
     local maxDist = _G.ESPMaxDistance
     local visible = {}
 
+    local now = os.clock()
+    local recheck = (now - lastRecheck) >= ESP_RECHECK_PERIOD
+    if recheck then lastRecheck = now end
+
     for target, e in pairs(espTracked) do
         if not target:IsDescendantOf(Workspace) then
             removeEntry(target)
         else
             e.part = (e.part and e.part.Parent and e.part) or findPart(target)
 
-            local kind, plr = "Item", nil
-            if e.hum or e.isGhost then
-                if e.isGhost then
-                    kind = "Ghost"
-                else
-                    plr = Players:GetPlayerFromCharacter(target)
-                    kind = plr and "Player" or "NPC"
-                end
+            -- Player check comes FIRST so a player can never be mis-tagged as a ghost
+            local plr = e.hum and Players:GetPlayerFromCharacter(target) or nil
+            if plr then
+                e.ghost = false
+            elseif recheck and not e.ghost and ghostMatch(target) then
+                e.ghost = true      -- catches ghosts whose attributes/children appear late
+            end
+
+            local kind = "Item"
+            if plr then
+                kind = "Player"
+            elseif e.ghost then
+                kind = "Ghost"
+            elseif e.hum then
+                kind = "NPC"
             end
 
             local ignored =
@@ -733,7 +802,12 @@ local function refreshESP()
         end
     end
 
-    table.sort(visible, function(a, b) return a.dist < b.dist end)
+    -- Ghosts and players get highlight priority, so items can't push them past the 30-highlight limit
+    table.sort(visible, function(a, b)
+        local oa, ob = KIND_ORDER[a.kind], KIND_ORDER[b.kind]
+        if oa ~= ob then return oa < ob end
+        return a.dist < b.dist
+    end)
 
     for i, e in ipairs(visible) do
         local color, showName, text
@@ -746,7 +820,7 @@ local function refreshESP()
         elseif e.kind == "Ghost" then
             color = _G.GhostColor
             showName = _G.ESPShowName
-            text = "[GHOST] " .. e.target.Name
+            text = "[Ghost] " .. e.target.Name
         elseif e.kind == "NPC" then
             color = _G.EntityColor
             showName = _G.ESPShowName
@@ -759,7 +833,7 @@ local function refreshESP()
 
         e.hl.Enabled = i <= MAX_HIGHLIGHTS
         e.hl.FillColor = color
-        e.hl.OutlineColor = (e.kind == "Item") and Color3.new(1, 1, 1) or color
+        e.hl.OutlineColor = (e.kind == "Item" or e.kind == "Ghost") and Color3.new(1, 1, 1) or color
         e.hl.FillTransparency = 1 - _G.ESPFillOpacity
         e.hl.OutlineTransparency = 1 - _G.ESPOutlineOpacity
 
@@ -774,7 +848,7 @@ local function refreshESP()
                 e.bb.Size = UDim2.new(0, 300, 0, size + 8)
             end
             text = string.format("%s [%dm]", text, math.floor(e.dist))
-            if text ~= e.lastText then   
+            if text ~= e.lastText then
                 e.label.Text = text
                 e.lastText = text
             end
@@ -798,7 +872,7 @@ local function setESPEnabled(state)
 
     espFolder = Instance.new("Folder")
     espFolder.Name = "ESPContainer"
-    espFolder.Parent = camera          
+    espFolder.Parent = camera
 
     table.insert(espConns, Workspace.DescendantAdded:Connect(considerInstance))
     table.insert(espConns, Workspace.DescendantRemoving:Connect(function(inst)
@@ -924,7 +998,7 @@ Header.Position = UDim2.new(0, 20, 0, 10)
 Header.BackgroundTransparency = 1
 
 local Title = Instance.new("TextLabel", Header)
-Title.Text = "Check System v.1.94 (Fixed & Ghost ESP Edition)"
+Title.Text = "Check System v.1.95 (Fixed & Ghost ESP Edition)"
 Title.Font = Enum.Font.GothamBold
 Title.TextSize = 18
 Title.TextColor3 = TEXT_MAIN
@@ -992,7 +1066,7 @@ RunService:BindToRenderStep("CheckSystemMouseFree", Enum.RenderPriority.Camera.V
         ModalUnlock.Modal = not looking
     end
 
-    if looking then return end   
+    if looking then return end
 
     if UserInputService.MouseBehavior == Enum.MouseBehavior.LockCenter then
         UserInputService.MouseBehavior = Enum.MouseBehavior.Default
@@ -1007,7 +1081,7 @@ end)
 ----------------------------------------------------
 local bypassYaw, bypassPitch = 0, 0
 local bypassZoom, bypassZoomTarget = 0, 0
-local bypassSaved = setmetatable({}, { __mode = "k" })   
+local bypassSaved = setmetatable({}, { __mode = "k" })
 
 local BODY_PARTS = {
     Head = true, Torso = true,
@@ -1129,13 +1203,13 @@ RunService:BindToRenderStep("CheckSystemBypassFP", Enum.RenderPriority.Camera.Va
     bypassZoom = bypassZoom + (bypassZoomTarget - bypassZoom) * (1 - math.exp(-dt * 14))
     if math.abs(bypassZoom - bypassZoomTarget) < 0.02 then bypassZoom = bypassZoomTarget end
 
-    local firstPersonView = bypassZoom < 1.5        
-    local firstPersonMouse = bypassZoomTarget < 1.5 
+    local firstPersonView = bypassZoom < 1.5
+    local firstPersonMouse = bypassZoomTarget < 1.5
 
     local menuOpen = MainFrame.Visible
     local rmb = UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton2)
     local rotating = rmb or (firstPersonMouse and not menuOpen)
-    if UserInputService:GetFocusedTextBox() then rotating = false end   
+    if UserInputService:GetFocusedTextBox() then rotating = false end
 
     if rotating then
         UserInputService.MouseBehavior = (firstPersonMouse and not menuOpen)
@@ -1171,7 +1245,7 @@ end)
 local CursorGui = Instance.new("ScreenGui")
 CursorGui.Name = "CheckSystemCursor"
 CursorGui.ResetOnSpawn = false
-CursorGui.IgnoreGuiInset = true      
+CursorGui.IgnoreGuiInset = true
 CursorGui.DisplayOrder = 1000
 mountGui(CursorGui)
 
@@ -1237,7 +1311,7 @@ local function createPage(name)
     page.AutomaticCanvasSize = Enum.AutomaticSize.Y
     page.CanvasSize = UDim2.new(0, 0, 0, 0)
     page.Visible = false
-    
+
     local layout = Instance.new("UIListLayout", page)
     layout.Padding = UDim.new(0, 8)
     layout.SortOrder = Enum.SortOrder.LayoutOrder
@@ -1256,7 +1330,7 @@ local function addTabButton(name)
     btn.TextSize = 13
     btn.TextColor3 = TEXT_SUB
     btn.TextXAlignment = Enum.TextXAlignment.Left
-    
+
     Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 8)
 
     btn.MouseButton1Click:Connect(function()
@@ -1295,7 +1369,7 @@ local configEntries = {}
 local function registerConfig(key, getter, setter)
     configEntries[#configEntries + 1] = { key = key, get = getter, set = setter }
 end
-local loadDefaultConfig = function() end   
+local loadDefaultConfig = function() end
 
 local function addToggle(parent, title, desc, default, callback)
     local card = Instance.new("Frame", parent)
@@ -1677,7 +1751,7 @@ local function addHexInput(parent, title, desc, defaultHex, callback, placeholde
             setPreview(color)
             callback(color)
         else
-            input.Text = lastText   
+            input.Text = lastText
         end
     end
 
@@ -1763,13 +1837,13 @@ addToggle(espPage, "Show Item Names", "Show name and distance tag on items/inter
 addInput(espPage, "Item Names Text Size", "Text size of item tags", _G.ESPItemTextSize, function(v) _G.ESPItemTextSize = math.clamp(v, 1, 100) end, 8, 32, 1)
 
 addToggle(espPage, "Ignore Players", "Do not highlight real players", false, function(s) _G.ESPIgnorePlayers = s; updateESPState() end)
-addToggle(espPage, "Ignore Entities", "Do not highlight normal NPCs", true, function(s) _G.ESPIgnoreNPCs = s; updateESPState() end)
-addToggle(espPage, "Ignore Ghosts", "Do not highlight Ghosts/Monsters", false, function(s) _G.ESPIgnoreGhosts = s; updateESPState() end)
+addToggle(espPage, "Ignore Entities", "Hide humanoid NPCs (Ghost ESP has its own toggle)", true, function(s) _G.ESPIgnoreNPCs = s; updateESPState() end)
+addToggle(espPage, "Ignore Ghosts", "Do not highlight ghosts / monsters (Ghost ESP)", false, function(s) _G.ESPIgnoreGhosts = s; updateESPState() end)
 addToggle(espPage, "Ignore Items", "Do not highlight items/interactables", false, function(s) _G.ESPIgnoreItems = s; updateESPState() end)
 
 addHexInput(espPage, "Players Color (HEX)", "Empty = original team color", "", function(c) _G.PlayerColor = c; updateESPState() end, "TEAM")
 addHexInput(espPage, "Entities Color (HEX)", "NPC Color", toHex(_G.EntityColor), function(c) _G.EntityColor = c or Color3.fromRGB(255, 170, 0); updateESPState() end, "FFAA00")
-addHexInput(espPage, "Ghost Color (HEX)", "Ghost/Monster Highlight Color", toHex(_G.GhostColor), function(c) _G.GhostColor = c or Color3.fromRGB(255, 0, 0); updateESPState() end, "FF0000")
+addHexInput(espPage, "Ghost Color (HEX)", "Empty = original red. Also colors the tag", toHex(_G.GhostColor), function(c) _G.GhostColor = c or Color3.fromRGB(255, 0, 0); updateESPState() end, "FF0000")
 addHexInput(espPage, "Items Color (HEX)", "Item Color", toHex(_G.ItemColor), function(c) _G.ItemColor = c or Color3.fromRGB(0, 255, 200); updateESPState() end, "00FFC8")
 
 addInput(espPage, "ESP Fill Opacity", "Highlight fill transparency", _G.ESPFillOpacity, function(v) _G.ESPFillOpacity = math.clamp(v, 0, 1) end, 0, 1, 0.05)
@@ -1891,8 +1965,10 @@ addInput(sysPage, "Fly Speed", "Speed of flight movement", FlySpeed, function(v)
 
 ----------------------------------------------------
 -- 8. Config System
+-- (wrapped in its own function so its locals do not count
+--  toward the 200-local limit of the main chunk)
 ----------------------------------------------------
-do
+;(function()
     local HttpService = game:GetService("HttpService")
 
     local CONFIG_DIR = "CheckSystem"
@@ -1900,7 +1976,7 @@ do
     local DEFAULT_FILE = CONFIG_DIR .. "/default.txt"
 
     local hasFS = (writefile and readfile and isfile and isfolder and makefolder and listfiles) ~= nil
-    local memConfigs, memDefault = {}, nil   
+    local memConfigs, memDefault = {}, nil
 
     local selected = nil
 
@@ -2265,7 +2341,7 @@ do
             say('Auto-loaded default config "' .. default .. '".')
         end
     end
-end
+end)()
 
 ----------------------------------------------------
 -- Character Initialization & Key Bindings
@@ -2274,7 +2350,7 @@ local function setupCharacter(char)
     local hum = char:WaitForChild("Humanoid")
     DefaultWalkSpeed = hum.WalkSpeed
     DefaultJumpPower = hum.JumpPower
-    
+
     updateMovement()
     if FlightState then startFlight() end
     if NoclipState then toggleNoclip(true) end
@@ -2294,13 +2370,13 @@ end
 
 UserInputService.InputBegan:Connect(function(input, gpe)
     if gpe then return end
-    
-    if KeybindListening then return end   
+
+    if KeybindListening then return end
 
     if input.KeyCode == Enum.KeyCode.RightShift then
         toggleGuiVisibility()
     end
-    
+
     if input.UserInputType == Enum.UserInputType.Keyboard then
         if NoclipKey and input.KeyCode == NoclipKey then
             toggleNoclip(not NoclipState)
@@ -2329,7 +2405,7 @@ end)
 loadDefaultConfig()
 
 StarterGui:SetCore("SendNotification", {
-    Title = "Check System v1.94",
+    Title = "Check System v1.95",
     Text = "Script executed successfully with Config & Ghost ESP!",
     Duration = 5
 })
