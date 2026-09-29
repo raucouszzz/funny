@@ -1,5 +1,5 @@
--- Check System Integrated Client (Master ESP, NPC HP, Item Interact & Ghost ESP Edition)
--- Fully Optimized & Fixed Toggle State Control System (v1.94 Patch - Spectate System Edition)
+-- Check System Integrated Client (Master ESP, NPC HP, Item Interact, Ghost ESP & Spectate Edition)
+-- Fully Fixed & Merged System (v1.94 Full Edition)
 
 local Players = game:GetService("Players")
 local Lighting = game:GetService("Lighting")
@@ -30,7 +30,7 @@ _G.ESPEnabled = false
 _G.ESPShowName = true
 _G.ESPShowItemName = true
 _G.ESPIgnorePlayers = false
-_G.ESPIgnoreNPCs = true                     -- เปิด Ignore Entities ไว้ก่อน (ใช้ Ghost ESP แทน)
+_G.ESPIgnoreNPCs = true
 _G.ESPIgnoreGhosts = false
 _G.ESPIgnoreItems = false
 _G.FriendColor = Color3.fromRGB(160, 90, 255)
@@ -38,12 +38,12 @@ _G.EnemyColor = Color3.fromRGB(255, 60, 60)
 _G.EntityColor = Color3.fromRGB(255, 170, 0)
 _G.GhostColor = Color3.fromRGB(255, 0, 0)
 _G.UseTeamColor = true
-_G.PlayerColor = nil                        -- nil = original behaviour (team / friend / enemy colour)
-_G.ItemColor = Color3.fromRGB(0, 255, 200)  -- original item colour
+_G.PlayerColor = nil
+_G.ItemColor = Color3.fromRGB(0, 255, 200)
 _G.ESPNameTextSize = 14
 _G.ESPItemTextSize = 13
-_G.ESPFillOpacity = 0.5                     -- original Highlight fill (transparency 0.5)
-_G.ESPOutlineOpacity = 1                    -- original Highlight outline (transparency 0)
+_G.ESPFillOpacity = 0.5
+_G.ESPOutlineOpacity = 1
 
 local WalkSpeedEnabled = false
 local CustomWalkSpeed = 32
@@ -92,8 +92,8 @@ local FirstPersonKey = Enum.KeyCode.RightAlt
 
 local BypassFPEnabled = false
 local BypassFPKey = nil
-local BypassSensitivity = 0.25     -- degrees per mouse pixel
-local BypassMaxZoom = 60           -- studs
+local BypassSensitivity = 0.25
+local BypassMaxZoom = 60
 local ShowCursorEnabled = true
 
 ----------------------------------------------------
@@ -140,13 +140,13 @@ local function setPlayerProp(name, value)
 end
 
 local function applyFirstPersonUnlock()
-    setPlayerProp("DevEnableMouseLock", true)                                          -- unlock shiftlock
-    setPlayerProp("DevComputerCameraMode", Enum.DevComputerCameraMovementMode.UserChoice)      -- unlock camera mode (pc)
-    setPlayerProp("DevComputerMovementMode", Enum.DevComputerMovementMode.UserChoice)  -- unlock movement mode (pc)
-    setPlayerProp("CameraMode", Enum.CameraMode.Classic)                               -- unlock first/third person
-    setPlayerProp("DevCameraOcclusionMode", Enum.DevCameraOcclusionMode.Zoom)          -- enable camera zooming
+    setPlayerProp("DevEnableMouseLock", true)
+    setPlayerProp("DevComputerCameraMode", Enum.DevComputerCameraMovementMode.UserChoice)
+    setPlayerProp("DevComputerMovementMode", Enum.DevComputerMovementMode.UserChoice)
+    setPlayerProp("CameraMode", Enum.CameraMode.Classic)
+    setPlayerProp("DevCameraOcclusionMode", Enum.DevCameraOcclusionMode.Zoom)
     if player.CameraMinZoomDistance > 0.5 then
-        setPlayerProp("CameraMinZoomDistance", 0.5)                                    -- allow zooming all the way in
+        setPlayerProp("CameraMinZoomDistance", 0.5)
     end
 end
 
@@ -479,7 +479,6 @@ end
 ----------------------------------------------------
 -- 4.5 Spectate System
 ----------------------------------------------------
-local SpectateEnabled = false
 local SpectateTarget = nil
 local SpectateSaved = nil
 local spectateConns = {}
@@ -507,7 +506,7 @@ end
 
 local function spectateApply(target)
     local cam = Workspace.CurrentCamera
-    local char = target.Character
+    local char = target and target.Character
     if not cam or not char then return end
     local hum = char:FindFirstChildOfClass("Humanoid") or char:WaitForChild("Humanoid", 3)
     if not hum then return end
@@ -539,54 +538,15 @@ local function spectateApply(target)
 end
 
 setSpectateTarget = function(target)
-    if target == player then target = nil end
-    if not target then
-        stopSpectate(true)
-        return
-    end
-    spectateApply(target)
-end
-
-local function toggleSpectate(state)
-    SpectateEnabled = state
-    if not state then
+    if target and target ~= player then
+        spectateApply(target)
+    else
         stopSpectate(true)
     end
-    if toggleUiUpdaters["Spectate Mode"] then
-        toggleUiUpdaters["Spectate Mode"](state)
-    end
 end
-
-local function spectateCycle(step)
-    if not SpectateEnabled then return end
-    local list = {}
-    for _, p in ipairs(Players:GetPlayers()) do
-        if p ~= player then list[#list + 1] = p end
-    end
-    if #list == 0 then return end
-
-    local idx = 1
-    if SpectateTarget then
-        for i, p in ipairs(list) do
-            if p == SpectateTarget then idx = i break end
-        end
-    end
-    idx = ((idx - 1 + step) % #list) + 1
-    setSpectateTarget(list[idx])
-    if SpectateUiRefresh then SpectateUiRefresh() end
-end
-
-player.CharacterAdded:Connect(function()
-    if SpectateEnabled and SpectateTarget then
-        task.wait(0.5)
-        if SpectateEnabled and SpectateTarget then
-            spectateApply(SpectateTarget)
-        end
-    end
-end)
 
 ----------------------------------------------------
--- 5. Master ESP (Optimized, event-driven & Ghost ESP)
+-- 5. Master ESP (Optimized, Ghost ESP integrated)
 ----------------------------------------------------
 _G.ESPMaxDistance = _G.ESPMaxDistance or 2000
 
@@ -598,53 +558,6 @@ local espToken     = 0
 local espFolder    = nil
 local espTracked   = {}
 local espConns     = {}
-
-local ESPFilter = { enabled = false, set = {} }   -- ESP target filter (key = "Kind|Name")
-
--- Ghost detection (จาก Ghost ESP)
-local GHOST_KEYWORDS = { "ghost", "monster", "entity", "demon", "killer", "nextbot" }
-local GHOST_ATTRS    = { "monster", "isghost", "entity" }
-
-local function containsAny(str, list)
-    for _, k in ipairs(list) do
-        if string.find(str, k, 1, true) then return true end
-    end
-    return false
-end
-
-local function isInsidePlayerChar(inst)
-    local p = inst
-    while p and p ~= Workspace do
-        if Players:GetPlayerFromCharacter(p) then return true end
-        p = p.Parent
-    end
-    return false
-end
-
-local function ghostMatch(obj)
-    if not (obj:IsA("Model") or obj:IsA("BasePart")) then return false end
-    if isInsidePlayerChar(obj) then return false end
-
-    if obj:IsA("Model") and obj:FindFirstChildOfClass("AnimationController") then
-        return true
-    end
-    if containsAny(string.lower(obj.Name), GHOST_KEYWORDS) then
-        return true
-    end
-    for attr in pairs(obj:GetAttributes()) do
-        if containsAny(string.lower(attr), GHOST_ATTRS) then return true end
-    end
-    return false
-end
-
-local function hasTrackedAncestor(inst)
-    local p = inst.Parent
-    while p and p ~= Workspace do
-        if espTracked[p] then return true end
-        p = p.Parent
-    end
-    return false
-end
 
 local function findPart(target)
     if target:IsA("BasePart") then return target end
@@ -667,7 +580,7 @@ local function removeEntry(target)
     if e.bb then e.bb:Destroy() end
 end
 
-local function createEntry(target, humanoid, isGhost)
+local function createEntry(target, humanoid)
     if espTracked[target] or not espFolder then return end
 
     local hl = Instance.new("Highlight")
@@ -695,44 +608,25 @@ local function createEntry(target, humanoid, isGhost)
     label.Parent = bb
 
     espTracked[target] = {
-        target = target, hum = humanoid, ghost = isGhost, hl = hl, bb = bb, label = label,
+        target = target, hum = humanoid, hl = hl, bb = bb, label = label,
         part = nil, lastText = "",
     }
 end
 
-local function classifyInstance(inst)
+local function considerInstance(inst)
     if inst:IsA("Humanoid") then
         local model = inst.Parent
         if model and model:IsA("Model") and model ~= player.Character then
-            return model, inst
+            createEntry(model, inst)
         end
     elseif inst:IsA("ProximityPrompt") or inst:IsA("ClickDetector") then
         local target = inst.Parent
         if target and target:IsA("Attachment") then target = target.Parent end
         if target and target ~= Workspace and not isInsideCharacter(target) then
-            return target, nil
+            createEntry(target, nil)
         end
     elseif inst:IsA("Tool") then
-        if not isInsideCharacter(inst) then return inst, nil end
-    end
-    return nil
-end
-
-local function considerInstance(inst)
-    local target, hum = classifyInstance(inst)
-    if target then
-        createEntry(target, hum)
-        if hum and espTracked[target] and ghostMatch(target) then
-            espTracked[target].ghost = true      -- ผีที่มี Humanoid
-        end
-    end
-
-    if (inst:IsA("Model") or inst:IsA("BasePart")) and ghostMatch(inst) then
-        if espTracked[inst] then
-            espTracked[inst].ghost = true
-        elseif not hasTrackedAncestor(inst) then
-            createEntry(inst, nil, true)
-        end
+        if not isInsideCharacter(inst) then createEntry(inst, nil) end
     end
 end
 
@@ -749,19 +643,22 @@ local function refreshESP()
             e.part = (e.part and e.part.Parent and e.part) or findPart(target)
 
             local kind, plr = "Item", nil
-            if e.ghost then
-                kind = "Ghost"
-            elseif e.hum then
+            if e.hum then
                 plr = Players:GetPlayerFromCharacter(target)
-                kind = plr and "Player" or "NPC"
+                if plr then
+                    kind = "Player"
+                elseif target.Name:lower():find("ghost") or target:FindFirstChild("Ghost") then
+                    kind = "Ghost"
+                else
+                    kind = "NPC"
+                end
             end
 
             local ignored =
                 (kind == "Player" and _G.ESPIgnorePlayers) or
-                (kind == "NPC"    and _G.ESPIgnoreNPCs) or
                 (kind == "Ghost"  and _G.ESPIgnoreGhosts) or
+                (kind == "NPC"    and _G.ESPIgnoreNPCs) or
                 (kind == "Item"   and _G.ESPIgnoreItems) or
-                (ESPFilter.enabled and not ESPFilter.set[kind .. "|" .. target.Name]) or
                 plr == player
 
             local dist = e.part and (e.part.Position - camPos).Magnitude or math.huge
@@ -789,7 +686,7 @@ local function refreshESP()
         elseif e.kind == "Ghost" then
             color = _G.GhostColor
             showName = _G.ESPShowName
-            text = "[Entity] " .. e.target.Name
+            text = string.format("%s [Ghost] | HP: %d", e.target.Name, e.hum.MaxHealth > 0 and math.floor(e.hum.Health) or 0)
         elseif e.kind == "NPC" then
             color = _G.EntityColor
             showName = _G.ESPShowName
@@ -802,7 +699,7 @@ local function refreshESP()
 
         e.hl.Enabled = i <= MAX_HIGHLIGHTS
         e.hl.FillColor = color
-        e.hl.OutlineColor = (e.kind == "Item" or e.kind == "Ghost") and Color3.new(1, 1, 1) or color
+        e.hl.OutlineColor = (e.kind == "Item") and Color3.new(1, 1, 1) or color
         e.hl.FillTransparency = 1 - _G.ESPFillOpacity
         e.hl.OutlineTransparency = 1 - _G.ESPOutlineOpacity
 
@@ -967,7 +864,7 @@ Header.Position = UDim2.new(0, 20, 0, 10)
 Header.BackgroundTransparency = 1
 
 local Title = Instance.new("TextLabel", Header)
-Title.Text = "Check System v.2.02"
+Title.Text = "Check System v.1.94 (Fixed & Integrated)"
 Title.Font = Enum.Font.GothamBold
 Title.TextSize = 18
 Title.TextColor3 = TEXT_MAIN
@@ -986,7 +883,7 @@ Subtitle.Size = UDim2.new(0, 300, 0, 18)
 Subtitle.BackgroundTransparency = 1
 
 local CloseBtn = Instance.new("TextButton", Header)
-CloseBtn.Text = "\u{00D7}"
+CloseBtn.Text = "×"
 CloseBtn.Font = Enum.Font.GothamBold
 CloseBtn.TextSize = 24
 CloseBtn.TextColor3 = TEXT_SUB
@@ -1044,63 +941,6 @@ RunService:BindToRenderStep("CheckSystemMouseFree", Enum.RenderPriority.Camera.V
         UserInputService.MouseIconEnabled = true
     end
 end)
-
-----------------------------------------------------
--- Panic Mode Declarations
-----------------------------------------------------
-local toggleControl = {}   -- [title] = { get, set } used by Panic Mode
-
-local Ctl = {
-    panicKey = Enum.KeyCode.End,          -- default Panic key
-    menuKey = Enum.KeyCode.RightShift,    -- default menu key
-    panicActive = false,
-    restore = true,                       -- turn features back on when Panic ends
-    snapshot = {},
-    menuWasOpen = false,
-}
-
-local PANIC_FEATURES = {
-    "Unlock Camera", "Unlock First Person", "Bypass First Person",
-    "Infinite Jump", "Enable WalkSpeed", "CFrame Walk", "Enable JumpPower",
-    "Instant Interact", "Fullbright", "Remove Fog", "FOV Changer",
-    "Master ESP", "Auto Teleport", "Ctrl + Click TP",
-    "NoClip", "Enable Flight", "Spectate Mode",
-}
-
-local function setPanicMode(state)
-    if state ~= Ctl.panicActive then
-        Ctl.panicActive = state
-        KeybindListening = false
-
-        if state then
-            table.clear(Ctl.snapshot)
-            for _, title in ipairs(PANIC_FEATURES) do
-                local c = toggleControl[title]
-                if c and c.get() then
-                    Ctl.snapshot[title] = true
-                    pcall(c.set, false)
-                end
-            end
-            Ctl.menuWasOpen = MainFrame.Visible
-            MainFrame.Visible = false
-            ScreenGui.Enabled = false
-        else
-            ScreenGui.Enabled = true
-            MainFrame.Visible = Ctl.menuWasOpen
-            updateMouseState()
-            if Ctl.restore then
-                for title in pairs(Ctl.snapshot) do
-                    local c = toggleControl[title]
-                    if c then pcall(c.set, true) end
-                end
-            end
-            table.clear(Ctl.snapshot)
-        end
-    end
-    if toggleUiUpdaters["Panic Mode"] then
-        toggleUiUpdaters["Panic Mode"](state)
-    end
-end
 
 ----------------------------------------------------
 -- Bypass First Person
@@ -1266,7 +1106,7 @@ RunService:BindToRenderStep("CheckSystemBypassFP", Enum.RenderPriority.Camera.Va
 end)
 
 ----------------------------------------------------
--- Cursor Overlay
+-- Cursor overlay
 ----------------------------------------------------
 local CursorGui = Instance.new("ScreenGui")
 CursorGui.Name = "CheckSystemCursor"
@@ -1381,8 +1221,6 @@ local visPage = createPage("Visual")
 local espPage = createPage("ESP")
 local tpPage = createPage("Teleport")
 local sysPage = createPage("Checks")
-local settingsPage = createPage("Settings")
-local spectatePage = createPage("Spectate")
 local configPage = createPage("Config")
 
 addTabButton("Camera")
@@ -1391,16 +1229,18 @@ addTabButton("Visual")
 addTabButton("ESP")
 addTabButton("Teleport")
 addTabButton("Checks")
-addTabButton("Settings")
-addTabButton("Spectate")
 addTabButton("Config")
 
+----------------------------------------------------
+-- Config Registry & Control Builders
+----------------------------------------------------
 local configEntries = {}
 local function registerConfig(key, getter, setter)
     configEntries[#configEntries + 1] = { key = key, get = getter, set = setter }
 end
+local loadDefaultConfig = function() end
 
-local function addToggle(parent, title, desc, default, callback, noConfig)
+local function addToggle(parent, title, desc, default, callback)
     local card = Instance.new("Frame", parent)
     card.Size = UDim2.new(1, -10, 0, 50)
     card.BackgroundColor3 = PURPLE_CARD
@@ -1459,13 +1299,6 @@ local function addToggle(parent, title, desc, default, callback, noConfig)
     switch.MouseButton1Click:Connect(function()
         setState(not state, false)
     end)
-
-    toggleControl[title] = {
-        get = function() return state end,
-        set = function(v) if v ~= state then setState(v, false) end end,
-    }
-
-    if noConfig then return end
 
     registerConfig(parent.Name .. "/" .. title,
         function() return state end,
@@ -1821,7 +1654,7 @@ local function addButton(parent, title, callback)
 end
 
 ----------------------------------------------------
--- Hotkey-friendly toggle helpers
+-- Hotkey Helpers
 ----------------------------------------------------
 local function setAutoTeleport(state)
     autoTpEnabled = state
@@ -1841,6 +1674,7 @@ end
 ----------------------------------------------------
 -- Features Registration
 ----------------------------------------------------
+-- Camera
 addToggle(camPage, "Unlock Camera", "Unlock camera distance limits", false, function(s) UnlockCameraEnabled = s end)
 addInput(camPage, "Camera Distance", "Max camera zoom distance", CameraMaxDistance, function(v) CameraMaxDistance = v end, 10, 5000, 10)
 addToggle(camPage, "Unlock First Person", "Unlock first person, shiftlock and zoom", false, function(s) toggleUnlockFirstPerson(s) end)
@@ -1850,7 +1684,10 @@ addKeybind(camPage, "Bypass First Person Keybind", "Press key to toggle Bypass F
 addInput(camPage, "Bypass Sensitivity", "Mouse sensitivity of Bypass First Person", BypassSensitivity, function(v) BypassSensitivity = math.clamp(v, 0.01, 5) end, 0.05, 1, 0.01)
 addInput(camPage, "Bypass Max Zoom", "How far the Bypass camera can zoom out (studs)", BypassMaxZoom, function(v) BypassMaxZoom = math.clamp(v, 5, 2000) end, 5, 500, 5)
 addToggle(camPage, "Show Cursor", "Draw a cursor while the menu is open", true, function(s) ShowCursorEnabled = s end)
+addToggle(camPage, "FOV Changer", "Change camera Field Of View", false, function(s) Ext.toggleFOV(s) end)
+addInput(camPage, "FOV Value", "Set custom Field Of View", 70, function(v) Ext.setFOV(v) end, 1, 120, 1)
 
+-- Movement
 addToggle(movePage, "Infinite Jump", "Jump infinitely in the air", false, function(s) InfiniteJumpEnabled = s end)
 addToggle(movePage, "Enable WalkSpeed", "Apply custom WalkSpeed", false, function(s) WalkSpeedEnabled = s; updateMovement() end)
 addInput(movePage, "WalkSpeed Value", "Set WalkSpeed amount", CustomWalkSpeed, function(v) CustomWalkSpeed = v; updateMovement() end, 0, 500, 1)
@@ -1858,272 +1695,17 @@ addToggle(movePage, "CFrame Walk", "Walk using CFrame (Bypasses movement checks)
 addToggle(movePage, "Enable JumpPower", "Apply custom JumpPower", false, function(s) JumpPowerEnabled = s; updateMovement() end)
 addInput(movePage, "JumpPower Value", "Set JumpPower amount", CustomJumpPower, function(v) CustomJumpPower = v; updateMovement() end, 0, 500, 1)
 
+-- Visual
 addToggle(visPage, "Instant Interact", "Bypass proximity prompt hold time", false, function(s) InstantInteractEnabled = s end)
 addToggle(visPage, "Fullbright", "Remove dark fog and shadows", false, function(s) toggleFullbright(s) end)
 addKeybind(visPage, "Fullbright Keybind", "Press key to toggle Fullbright", nil, function(k) FullbrightKey = k end)
 addInput(visPage, "Light Intensity", "Adjust brightness level", LightIntensity, function(v) LightIntensity = v; if FullbrightEnabled then applyFullbright() end end, 0, 1, 0.05)
-addToggle(visPage, "Remove Fog", "Remove Atmosphere, fog, blur, DoF, dark filters", false, function(s) Ext.toggleRemoveFog(s) end)
-addToggle(visPage, "FOV Changer", "Override the camera field of view", false, function(s) Ext.toggleFOV(s) end)
-addInput(visPage, "FOV Value", "Field of view (1 - 120)", 70, function(v) Ext.setFOV(v) end, 30, 120, 1)
+addToggle(visPage, "Remove Fog", "Clear atmospheric fog and blur effects", false, function(s) Ext.toggleRemoveFog(s) end)
 
+-- ESP
 addToggle(espPage, "Master ESP", "Enable players, entities and items highlights", false, function(s) setMasterESP(s) end)
 addKeybind(espPage, "Master ESP Keybind", "Press key to toggle Master ESP", nil, function(k) MasterESPKey = k end)
 addInput(espPage, "ESP Max Distance", "Max ESP render distance (studs)", _G.ESPMaxDistance, function(v) _G.ESPMaxDistance = v end, 50, 10000, 50)
-
-do  -- ESP Target Filter: pick exactly which entities / items / players to show
-    local scanResult = { Ghost = {}, Player = {}, NPC = {}, Item = {} }   -- [kind][name] = count
-    local KIND_ORDER = { "Ghost", "NPC", "Item", "Player" }
-    local KIND_LABEL = { Ghost = "GHOSTS", NPC = "ENTITIES (NPC)", Item = "ITEMS / INTERACTABLES", Player = "PLAYERS" }
-    local searchText = ""
-    local scanToken = 0
-    local visibleKeys = {}
-
-    local frame = Instance.new("Frame", MainFrame)
-    frame.Name = "ESPTargetList"
-    frame.Size = UDim2.new(0, 230, 1, -85)
-    frame.Position = UDim2.new(0, -240, 0, 75)
-    frame.BackgroundColor3 = PURPLE_DARK
-    frame.Visible = false
-    Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 10)
-    local frameStroke = Instance.new("UIStroke", frame)
-    frameStroke.Color = PURPLE_PRIMARY
-    frameStroke.Thickness = 1.2
-
-    local titleLbl = Instance.new("TextLabel", frame)
-    titleLbl.Text = "ESP Target List"
-    titleLbl.Font = Enum.Font.GothamBold
-    titleLbl.TextSize = 13
-    titleLbl.TextColor3 = TEXT_MAIN
-    titleLbl.Size = UDim2.new(0, 140, 0, 30)
-    titleLbl.Position = UDim2.new(0, 10, 0, 0)
-    titleLbl.TextXAlignment = Enum.TextXAlignment.Left
-    titleLbl.BackgroundTransparency = 1
-
-    local function smallBtn(text, size, pos)
-        local b = Instance.new("TextButton", frame)
-        b.Text = text
-        b.Font = Enum.Font.GothamBold
-        b.TextSize = 11
-        b.TextColor3 = PURPLE_ACCENT
-        b.BackgroundColor3 = PURPLE_CARD
-        b.Size = size
-        b.Position = pos
-        Instance.new("UICorner", b).CornerRadius = UDim.new(0, 6)
-        return b
-    end
-
-    local refreshBtn2 = smallBtn("Refresh", UDim2.new(0, 64, 0, 22), UDim2.new(1, -72, 0, 4))
-    local selectBtn   = smallBtn("Select Shown", UDim2.new(0.5, -11, 0, 22), UDim2.new(0, 8, 0, 62))
-    local clearBtn    = smallBtn("Clear All", UDim2.new(0.5, -11, 0, 22), UDim2.new(0.5, 3, 0, 62))
-
-    local search = Instance.new("TextBox", frame)
-    search.Size = UDim2.new(1, -16, 0, 24)
-    search.Position = UDim2.new(0, 8, 0, 32)
-    search.Text = ""
-    search.PlaceholderText = "Search name..."
-    search.PlaceholderColor3 = TEXT_SUB
-    search.ClearTextOnFocus = false
-    search.Font = Enum.Font.Gotham
-    search.TextSize = 12
-    search.TextColor3 = PURPLE_ACCENT
-    search.BackgroundColor3 = PURPLE_CARD
-    Instance.new("UICorner", search).CornerRadius = UDim.new(0, 6)
-
-    local scroll = Instance.new("ScrollingFrame", frame)
-    scroll.Size = UDim2.new(1, -12, 1, -96)
-    scroll.Position = UDim2.new(0, 6, 0, 90)
-    scroll.BackgroundTransparency = 1
-    scroll.BorderSizePixel = 0
-    scroll.ScrollBarThickness = 2
-    scroll.ScrollBarImageColor3 = PURPLE_PRIMARY
-    scroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
-    scroll.CanvasSize = UDim2.new(0, 0, 0, 0)
-    local scrollLayout = Instance.new("UIListLayout", scroll)
-    scrollLayout.Padding = UDim.new(0, 3)
-    scrollLayout.SortOrder = Enum.SortOrder.LayoutOrder
-
-    local function render()
-        for _, c in ipairs(scroll:GetChildren()) do
-            if not c:IsA("UIListLayout") then c:Destroy() end
-        end
-        table.clear(visibleKeys)
-
-        local q = searchText:lower()
-        local order = 0
-
-        for _, kind in ipairs(KIND_ORDER) do
-            local names, seen = {}, {}
-            for name in pairs(scanResult[kind]) do
-                seen[name] = true
-                names[#names + 1] = name
-            end
-            for key in pairs(ESPFilter.set) do
-                local k, n = key:match("^(%w+)|(.+)$")
-                if k == kind and not seen[n] then
-                    seen[n] = true
-                    names[#names + 1] = n
-                end
-            end
-            if q ~= "" then
-                local filtered = {}
-                for _, n in ipairs(names) do
-                    if n:lower():find(q, 1, true) then filtered[#filtered + 1] = n end
-                end
-                names = filtered
-            end
-            table.sort(names, function(a, b) return a:lower() < b:lower() end)
-
-            if #names > 0 then
-                order += 1
-                local header = Instance.new("TextLabel", scroll)
-                header.LayoutOrder = order
-                header.Size = UDim2.new(1, 0, 0, 18)
-                header.BackgroundTransparency = 1
-                header.Font = Enum.Font.GothamBold
-                header.TextSize = 10
-                header.TextColor3 = PURPLE_ACCENT
-                header.TextXAlignment = Enum.TextXAlignment.Left
-                header.Text = "  " .. KIND_LABEL[kind] .. "  (" .. #names .. ")"
-
-                for _, name in ipairs(names) do
-                    order += 1
-                    local key = kind .. "|" .. name
-                    visibleKeys[#visibleKeys + 1] = key
-                    local count = scanResult[kind][name]
-
-                    local btn = Instance.new("TextButton", scroll)
-                    btn.LayoutOrder = order
-                    btn.Size = UDim2.new(1, 0, 0, 24)
-                    btn.Font = Enum.Font.GothamBold
-                    btn.TextSize = 11
-                    btn.TextXAlignment = Enum.TextXAlignment.Left
-                    btn.TextTruncate = Enum.TextTruncate.AtEnd
-                    btn.AutoButtonColor = false
-                    btn.Text = "  " .. name .. (count and count > 1 and ("   x" .. count) or (count == nil and "   (not in scan)" or ""))
-                    Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 5)
-
-                    local function paint()
-                        local on = ESPFilter.set[key]
-                        btn.BackgroundColor3 = on and PURPLE_PRIMARY or PURPLE_CARD
-                        btn.TextColor3 = on and TEXT_MAIN or TEXT_SUB
-                    end
-                    paint()
-
-                    btn.MouseButton1Click:Connect(function()
-                        if ESPFilter.set[key] then ESPFilter.set[key] = nil else ESPFilter.set[key] = true end
-                        paint()
-                        updateESPState()
-                    end)
-                end
-            end
-        end
-
-        if order == 0 then
-            local empty = Instance.new("TextLabel", scroll)
-            empty.Size = UDim2.new(1, 0, 0, 40)
-            empty.BackgroundTransparency = 1
-            empty.Font = Enum.Font.Gotham
-            empty.TextSize = 11
-            empty.TextColor3 = TEXT_SUB
-            empty.TextWrapped = true
-            empty.Text = "Nothing found. Press Refresh."
-        end
-    end
-
-    local function scan()
-        scanToken += 1
-        local my = scanToken
-        titleLbl.Text = "Scanning..."
-        task.spawn(function()
-            local result = { Ghost = {}, Player = {}, NPC = {}, Item = {} }
-            local seenTargets = {}
-            local n = 0
-            for _, inst in ipairs(Workspace:GetDescendants()) do
-                if my ~= scanToken then return end
-
-                if (inst:IsA("Model") or inst:IsA("BasePart")) and not seenTargets[inst] and ghostMatch(inst) then
-                    local dup = false
-                    local p = inst.Parent
-                    while p and p ~= Workspace do
-                        if seenTargets[p] then dup = true break end
-                        p = p.Parent
-                    end
-                    if not dup then
-                        seenTargets[inst] = true
-                        result.Ghost[inst.Name] = (result.Ghost[inst.Name] or 0) + 1
-                    end
-                end
-
-                local target, hum = classifyInstance(inst)
-                if target and not seenTargets[target] then
-                    seenTargets[target] = true
-                    local kind = "Item"
-                    if hum then
-                        kind = Players:GetPlayerFromCharacter(target) and "Player" or "NPC"
-                    end
-                    result[kind][target.Name] = (result[kind][target.Name] or 0) + 1
-                end
-                n += 1
-                if n % 500 == 0 then task.wait() end
-            end
-            scanResult = result
-            titleLbl.Text = "ESP Target List"
-            render()
-        end)
-    end
-
-    refreshBtn2.MouseButton1Click:Connect(scan)
-    search:GetPropertyChangedSignal("Text"):Connect(function()
-        searchText = search.Text
-        render()
-    end)
-    selectBtn.MouseButton1Click:Connect(function()
-        for _, key in ipairs(visibleKeys) do ESPFilter.set[key] = true end
-        render()
-        updateESPState()
-    end)
-    clearBtn.MouseButton1Click:Connect(function()
-        table.clear(ESPFilter.set)
-        render()
-        updateESPState()
-    end)
-
-    addToggle(espPage, "ESP Filter", "Only show targets selected in the Target List", false, function(s)
-        ESPFilter.enabled = s
-        updateESPState()
-    end)
-    addButton(espPage, "Open / Close ESP Target List", function()
-        frame.Visible = not frame.Visible
-        if frame.Visible then
-            render()
-            if next(scanResult.Ghost) == nil and next(scanResult.NPC) == nil and next(scanResult.Item) == nil and next(scanResult.Player) == nil then
-                scan()
-            end
-        end
-    end)
-    addButton(espPage, "Refresh ESP Target List", function()
-        frame.Visible = true
-        scan()
-    end)
-
-    registerConfig("ESP/FilterSelection",
-        function()
-            local t = {}
-            for key in pairs(ESPFilter.set) do t[#t + 1] = key end
-            table.sort(t)
-            return t
-        end,
-        function(v)
-            if type(v) == "table" then
-                table.clear(ESPFilter.set)
-                for _, key in ipairs(v) do
-                    if type(key) == "string" then ESPFilter.set[key] = true end
-                end
-                render()
-                updateESPState()
-            end
-        end)
-end
 
 addToggle(espPage, "Show Names & HP", "Show name, HP and distance tag on players/entities", true, function(s) _G.ESPShowName = s; updateESPState() end)
 addInput(espPage, "Names & HP Text Size", "Text size of player/entity tags", _G.ESPNameTextSize, function(v) _G.ESPNameTextSize = math.clamp(v, 1, 100) end, 8, 32, 1)
@@ -2131,18 +1713,19 @@ addToggle(espPage, "Show Item Names", "Show name and distance tag on items/inter
 addInput(espPage, "Item Names Text Size", "Text size of item tags", _G.ESPItemTextSize, function(v) _G.ESPItemTextSize = math.clamp(v, 1, 100) end, 8, 32, 1)
 
 addToggle(espPage, "Ignore Players", "Do not highlight real players", false, function(s) _G.ESPIgnorePlayers = s; updateESPState() end)
-addToggle(espPage, "Ignore Entities", "Hide humanoid NPCs (Ghost ESP has its own toggle)", true, function(s) _G.ESPIgnoreNPCs = s; updateESPState() end)
-addToggle(espPage, "Ignore Ghosts", "Do not highlight ghosts / monsters (Ghost ESP)", false, function(s) _G.ESPIgnoreGhosts = s; updateESPState() end)
+addToggle(espPage, "Ignore Entities", "Do not highlight NPCs/Entities", true, function(s) _G.ESPIgnoreNPCs = s; updateESPState() end)
+addToggle(espPage, "Ignore Ghosts", "Do not highlight Ghosts", false, function(s) _G.ESPIgnoreGhosts = s; updateESPState() end)
 addToggle(espPage, "Ignore Items", "Do not highlight items/interactables", false, function(s) _G.ESPIgnoreItems = s; updateESPState() end)
 
 addHexInput(espPage, "Players Color (HEX)", "Empty = original team color. Also colors the tag", "", function(c) _G.PlayerColor = c; updateESPState() end, "TEAM")
 addHexInput(espPage, "Entities Color (HEX)", "Empty = original color. Also colors the tag", toHex(_G.EntityColor), function(c) _G.EntityColor = c or Color3.fromRGB(255, 170, 0); updateESPState() end, "FFAA00")
-addHexInput(espPage, "Ghost Color (HEX)", "Empty = original red. Also colors the tag", toHex(_G.GhostColor), function(c) _G.GhostColor = c or Color3.fromRGB(255, 0, 0); updateESPState() end, "FF0000")
+addHexInput(espPage, "Ghosts Color (HEX)", "Empty = original color. Also colors the tag", toHex(_G.GhostColor), function(c) _G.GhostColor = c or Color3.fromRGB(255, 0, 0); updateESPState() end, "FF0000")
 addHexInput(espPage, "Items Color (HEX)", "Empty = original color. Also colors the tag", toHex(_G.ItemColor), function(c) _G.ItemColor = c or Color3.fromRGB(0, 255, 200); updateESPState() end, "00FFC8")
 
 addInput(espPage, "ESP Fill Opacity", "Highlight fill (0 = clear, 1 = solid)", _G.ESPFillOpacity, function(v) _G.ESPFillOpacity = math.clamp(v, 0, 1) end, 0, 1, 0.05)
 addInput(espPage, "ESP Outline Opacity", "Highlight outline (0 = clear, 1 = solid)", _G.ESPOutlineOpacity, function(v) _G.ESPOutlineOpacity = math.clamp(v, 0, 1) end, 0, 1, 0.05)
 
+-- Teleport & Spectate Window
 addToggle(tpPage, "Auto Teleport", "Loop teleport to saved position", false, function(s) setAutoTeleport(s) end)
 addKeybind(tpPage, "Auto Teleport Keybind", "Press key to toggle Auto Teleport", nil, function(k) AutoTpKey = k end)
 addToggle(tpPage, "Ctrl + Click TP", "Teleport to mouse click location", false, function(s) ctrlTpEnabled = s end)
@@ -2157,141 +1740,8 @@ addButton(tpPage, "Teleport to Saved Position", function()
     end
 end)
 
-do
-    local rows = {}
-
-    addToggle(spectatePage, "Spectate Mode", "Watch another player through their camera", false, function(s)
-        toggleSpectate(s)
-    end)
-    addKeybind(spectatePage, "Spectate Toggle Keybind", "Press key to toggle Spectate Mode", nil, function(k)
-        SpectateToggleKey = k
-    end)
-    addKeybind(spectatePage, "Next Target Keybind", "Press key to spectate the next player", Enum.KeyCode.RightBracket, function(k)
-        SpectateNextKey = k
-    end)
-    addKeybind(spectatePage, "Previous Target Keybind", "Press key to spectate the previous player", Enum.KeyCode.LeftBracket, function(k)
-        SpectatePrevKey = k
-    end)
-
-    local listCard = Instance.new("Frame", spectatePage)
-    listCard.Size = UDim2.new(1, -10, 0, 260)
-    listCard.BackgroundColor3 = PURPLE_CARD
-    listCard.BackgroundTransparency = 0.2
-    listCard.BorderSizePixel = 0
-    Instance.new("UICorner", listCard).CornerRadius = UDim.new(0, 8)
-
-    local listTitle = Instance.new("TextLabel", listCard)
-    listTitle.Text = "Pick a Player to Spectate"
-    listTitle.Font = Enum.Font.GothamBold
-    listTitle.TextSize = 13
-    listTitle.TextColor3 = TEXT_MAIN
-    listTitle.Position = UDim2.new(0, 12, 0, 8)
-    listTitle.Size = UDim2.new(0, 260, 0, 16)
-    listTitle.TextXAlignment = Enum.TextXAlignment.Left
-    listTitle.BackgroundTransparency = 1
-
-    local refreshBtn3 = Instance.new("TextButton", listCard)
-    refreshBtn3.Text = "Refresh"
-    refreshBtn3.Font = Enum.Font.GothamBold
-    refreshBtn3.TextSize = 11
-    refreshBtn3.TextColor3 = PURPLE_ACCENT
-    refreshBtn3.BackgroundColor3 = PURPLE_DARK
-    refreshBtn3.Size = UDim2.new(0, 64, 0, 22)
-    refreshBtn3.Position = UDim2.new(1, -74, 0, 6)
-    Instance.new("UICorner", refreshBtn3).CornerRadius = UDim.new(0, 6)
-
-    local stopBtn = Instance.new("TextButton", listCard)
-    stopBtn.Text = "Stop Spectating"
-    stopBtn.Font = Enum.Font.GothamBold
-    stopBtn.TextSize = 11
-    stopBtn.TextColor3 = PURPLE_ACCENT
-    stopBtn.BackgroundColor3 = PURPLE_DARK
-    stopBtn.Size = UDim2.new(0, 100, 0, 22)
-    stopBtn.Position = UDim2.new(1, -180, 0, 6)
-    Instance.new("UICorner", stopBtn).CornerRadius = UDim.new(0, 6)
-
-    local scroll2 = Instance.new("ScrollingFrame", listCard)
-    scroll2.Size = UDim2.new(1, -16, 1, -42)
-    scroll2.Position = UDim2.new(0, 8, 0, 34)
-    scroll2.BackgroundTransparency = 1
-    scroll2.BorderSizePixel = 0
-    scroll2.ScrollBarThickness = 3
-    scroll2.ScrollBarImageColor3 = PURPLE_PRIMARY
-    scroll2.AutomaticCanvasSize = Enum.AutomaticSize.Y
-    scroll2.CanvasSize = UDim2.new(0, 0, 0, 0)
-    local scroll2Layout = Instance.new("UIListLayout", scroll2)
-    scroll2Layout.Padding = UDim.new(0, 4)
-
-    local function rebuildSpectateList()
-        for _, c in ipairs(scroll2:GetChildren()) do
-            if not c:IsA("UIListLayout") then c:Destroy() end
-        end
-        table.clear(rows)
-
-        for _, target in ipairs(Players:GetPlayers()) do
-            if target ~= player then
-                local btn = Instance.new("TextButton", scroll2)
-                btn.Size = UDim2.new(1, 0, 0, 28)
-                btn.Font = Enum.Font.GothamBold
-                btn.TextSize = 12
-                btn.TextXAlignment = Enum.TextXAlignment.Left
-                btn.AutoButtonColor = false
-                btn.Text = "  " .. target.DisplayName .. " (@" .. target.Name .. ")"
-                Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 6)
-
-                local function paint()
-                    local on = SpectateTarget == target
-                    btn.BackgroundColor3 = on and PURPLE_PRIMARY or PURPLE_DARK
-                    btn.TextColor3 = on and TEXT_MAIN or TEXT_SUB
-                end
-                paint()
-                rows[target] = paint
-
-                btn.MouseButton1Click:Connect(function()
-                    if not SpectateEnabled then
-                        toggleUiUpdaters["Spectate Mode"](true)
-                        toggleSpectate(true)
-                    end
-                    setSpectateTarget(target)
-                    for _, p in pairs(rows) do p() end
-                end)
-            end
-        end
-
-        if next(rows) == nil then
-            local empty = Instance.new("TextLabel", scroll2)
-            empty.Size = UDim2.new(1, 0, 0, 26)
-            empty.BackgroundTransparency = 1
-            empty.Font = Enum.Font.Gotham
-            empty.TextSize = 11
-            empty.TextColor3 = TEXT_SUB
-            empty.Text = "No other players in the server."
-        end
-    end
-
-    refreshBtn3.MouseButton1Click:Connect(rebuildSpectateList)
-    stopBtn.MouseButton1Click:Connect(function()
-        setSpectateTarget(nil)
-        for _, p in pairs(rows) do p() end
-    end)
-
-    Players.PlayerAdded:Connect(rebuildSpectateList)
-    Players.PlayerRemoving:Connect(function() task.defer(rebuildSpectateList) end)
-
-    SpectateUiRefresh = function()
-        for _, p in pairs(rows) do p() end
-    end
-
-    rebuildSpectateList()
-end
-
-addToggle(settingsPage, "Panic Mode", "Disable ALL features + hide menu (press again to undo)", false, function(s) setPanicMode(s) end, true)
-addKeybind(settingsPage, "Panic Keybind", "Press key to toggle Panic Mode", Ctl.panicKey, function(k) Ctl.panicKey = k end)
-addToggle(settingsPage, "Restore After Panic", "Turn features back on when Panic ends", true, function(s) Ctl.restore = s end)
-addKeybind(settingsPage, "Menu Keybind", "Key that opens / closes this menu", Ctl.menuKey, function(k) Ctl.menuKey = k end)
-
 local PlayerListFrame = Instance.new("Frame", MainFrame)
-PlayerListFrame.Size = UDim2.new(0, 200, 1, -85)
+PlayerListFrame.Size = UDim2.new(0, 230, 1, -85)
 PlayerListFrame.Position = UDim2.new(1, 10, 0, 75)
 PlayerListFrame.BackgroundColor3 = PURPLE_DARK
 PlayerListFrame.Visible = false
@@ -2302,17 +1752,17 @@ plStroke.Color = PURPLE_PRIMARY
 plStroke.Thickness = 1.2
 
 local plTitle = Instance.new("TextLabel", PlayerListFrame)
-plTitle.Text = "Player List TP"
+plTitle.Text = "Player Control Window"
 plTitle.Font = Enum.Font.GothamBold
 plTitle.TextSize = 13
 plTitle.TextColor3 = TEXT_MAIN
-plTitle.Size = UDim2.new(0, 150, 0, 30)
+plTitle.Size = UDim2.new(0, 160, 0, 30)
 plTitle.Position = UDim2.new(0, 10, 0, 0)
 plTitle.TextXAlignment = Enum.TextXAlignment.Left
 plTitle.BackgroundTransparency = 1
 
 local refreshBtn = Instance.new("TextButton", PlayerListFrame)
-refreshBtn.Text = "\u{21BB}"
+refreshBtn.Text = "↻"
 refreshBtn.Font = Enum.Font.GothamBold
 refreshBtn.TextSize = 14
 refreshBtn.TextColor3 = TEXT_SUB
@@ -2332,23 +1782,57 @@ plLayout.Padding = UDim.new(0, 4)
 
 local function refreshPlayers()
     for _, child in ipairs(plScroll:GetChildren()) do
-        if child:IsA("TextButton") then child:Destroy() end
+        if not child:IsA("UIListLayout") then child:Destroy() end
     end
     for _, target in ipairs(Players:GetPlayers()) do
         if target ~= player then
-            local btn = Instance.new("TextButton", plScroll)
-            btn.Size = UDim2.new(1, 0, 0, 26)
-            btn.Text = target.DisplayName
-            btn.Font = Enum.Font.Gotham
-            btn.TextSize = 11
-            btn.TextColor3 = TEXT_MAIN
-            btn.BackgroundColor3 = PURPLE_CARD
-            Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 4)
+            local card = Instance.new("Frame", plScroll)
+            card.Size = UDim2.new(1, 0, 0, 28)
+            card.BackgroundColor3 = PURPLE_CARD
+            Instance.new("UICorner", card).CornerRadius = UDim.new(0, 4)
 
-            btn.MouseButton1Click:Connect(function()
+            local pLabel = Instance.new("TextLabel", card)
+            pLabel.Text = "  " .. target.DisplayName
+            pLabel.Font = Enum.Font.Gotham
+            pLabel.TextSize = 11
+            pLabel.TextColor3 = TEXT_MAIN
+            pLabel.Size = UDim2.new(1, -100, 1, 0)
+            pLabel.TextXAlignment = Enum.TextXAlignment.Left
+            pLabel.BackgroundTransparency = 1
+
+            local tpBtn = Instance.new("TextButton", card)
+            tpBtn.Size = UDim2.new(0, 42, 0, 20)
+            tpBtn.Position = UDim2.new(1, -94, 0.5, -10)
+            tpBtn.Text = "TP"
+            tpBtn.Font = Enum.Font.GothamBold
+            tpBtn.TextSize = 10
+            tpBtn.TextColor3 = TEXT_MAIN
+            tpBtn.BackgroundColor3 = PURPLE_PRIMARY
+            Instance.new("UICorner", tpBtn).CornerRadius = UDim.new(0, 4)
+
+            tpBtn.MouseButton1Click:Connect(function()
                 if target.Character and target.Character:FindFirstChild("HumanoidRootPart") and player.Character then
                     player.Character:MoveTo(target.Character.HumanoidRootPart.Position)
                 end
+            end)
+
+            local specBtn = Instance.new("TextButton", card)
+            specBtn.Size = UDim2.new(0, 46, 0, 20)
+            specBtn.Position = UDim2.new(1, -48, 0.5, -10)
+            specBtn.Text = (SpectateTarget == target) and "Unspec" or "Spec"
+            specBtn.Font = Enum.Font.GothamBold
+            specBtn.TextSize = 10
+            specBtn.TextColor3 = TEXT_MAIN
+            specBtn.BackgroundColor3 = (SpectateTarget == target) and Color3.fromRGB(200, 50, 50) or PURPLE_DARK
+            Instance.new("UICorner", specBtn).CornerRadius = UDim.new(0, 4)
+
+            specBtn.MouseButton1Click:Connect(function()
+                if SpectateTarget == target then
+                    setSpectateTarget(nil)
+                else
+                    setSpectateTarget(target)
+                end
+                refreshPlayers()
             end)
         end
     end
@@ -2356,18 +1840,460 @@ end
 
 refreshBtn.MouseButton1Click:Connect(refreshPlayers)
 
-addButton(tpPage, "Toggle Player List Window", function()
+addButton(tpPage, "Toggle Player Control Window", function()
     PlayerListFrame.Visible = not PlayerListFrame.Visible
     if PlayerListFrame.Visible then refreshPlayers() end
 end)
-    
-addToggle(sysPage, "NoClip", "Walk through walls", false, function(s) 
-    toggleNoclip(s)
-end)
+
+-- Checks
+addToggle(sysPage, "NoClip", "Walk through walls", false, function(s) toggleNoclip(s) end)
 addKeybind(sysPage, "NoClip Keybind", "Press key to toggle NoClip", nil, function(k) NoclipKey = k end)
 
-addToggle(sysPage, "Enable Flight", "Fly freely across map", false, function(s) 
-    toggleFlight(s) 
-end)
+addToggle(sysPage, "Enable Flight", "Fly freely across map", false, function(s) toggleFlight(s) end)
 addKeybind(sysPage, "Flight Keybind", "Press key to toggle Flight", nil, function(k) FlightKey = k end)
-addInput(sysPage, "Fly Speed", "Speed of flight movement", FlySpeed, function(v) FlySpeed = v end)
+addInput(sysPage, "Fly Speed", "Speed of flight movement", FlySpeed, function(v) FlySpeed = v end, 1, 500, 1)
+
+----------------------------------------------------
+-- 8. Config System (Save / Overwrite / Load / Set Default)
+----------------------------------------------------
+do
+    local HttpService = game:GetService("HttpService")
+
+    local CONFIG_DIR = "CheckSystem"
+    local CONFIG_FOLDER = CONFIG_DIR .. "/Configs"
+    local DEFAULT_FILE = CONFIG_DIR .. "/default.txt"
+
+    local hasFS = (writefile and readfile and isfile and isfolder and makefolder and listfiles) ~= nil
+    local memConfigs, memDefault = {}, nil
+
+    local selected = nil
+
+    local function ensureFolders()
+        if not hasFS then return end
+        pcall(function()
+            if not isfolder(CONFIG_DIR) then makefolder(CONFIG_DIR) end
+            if not isfolder(CONFIG_FOLDER) then makefolder(CONFIG_FOLDER) end
+        end)
+    end
+
+    local function sanitizeName(n)
+        n = tostring(n or "")
+        n = n:gsub("[^%w%s_%-]", "")
+        n = n:gsub("^%s+", "")
+        n = n:gsub("%s+$", "")
+        return n:sub(1, 32)
+    end
+
+    local function configPath(name)
+        return CONFIG_FOLDER .. "/" .. name .. ".json"
+    end
+
+    local function configExists(name)
+        if hasFS then
+            local ok, res = pcall(isfile, configPath(name))
+            return ok and res == true
+        end
+        return memConfigs[name] ~= nil
+    end
+
+    local function listConfigs()
+        local names = {}
+        if hasFS then
+            ensureFolders()
+            local ok, files = pcall(listfiles, CONFIG_FOLDER)
+            if ok and type(files) == "table" then
+                for _, f in ipairs(files) do
+                    local n = tostring(f):match("([^/\\]+)%.json$")
+                    if n then names[#names + 1] = n end
+                end
+            end
+        else
+            for n in pairs(memConfigs) do names[#names + 1] = n end
+        end
+        table.sort(names, function(a, b) return a:lower() < b:lower() end)
+        return names
+    end
+
+    local function writeConfig(name, data)
+        local okEnc, json = pcall(function() return HttpService:JSONEncode(data) end)
+        if not okEnc then return false, "Could not encode settings" end
+        if hasFS then
+            ensureFolders()
+            local ok, err = pcall(writefile, configPath(name), json)
+            return ok, err
+        end
+        memConfigs[name] = json
+        return true
+    end
+
+    local function readConfig(name)
+        local raw
+        if hasFS then
+            local ok, res = pcall(readfile, configPath(name))
+            if not ok then return nil, "Could not read the config file" end
+            raw = res
+        else
+            raw = memConfigs[name]
+        end
+        if not raw then return nil, "Config not found" end
+        local ok, data = pcall(function() return HttpService:JSONDecode(raw) end)
+        if not ok or type(data) ~= "table" then return nil, "Config file is corrupted" end
+        return data
+    end
+
+    local function getDefault()
+        if hasFS then
+            local ok, name = pcall(function()
+                if isfile(DEFAULT_FILE) then return readfile(DEFAULT_FILE) end
+                return nil
+            end)
+            if ok and type(name) == "string" then
+                name = sanitizeName(name)
+                if name ~= "" and configExists(name) then return name end
+            end
+            return nil
+        end
+        if memDefault and configExists(memDefault) then return memDefault end
+        return nil
+    end
+
+    local function setDefault(name)
+        if hasFS then
+            ensureFolders()
+            local ok, err = pcall(writefile, DEFAULT_FILE, name)
+            return ok, err
+        end
+        memDefault = name
+        return true
+    end
+
+    local function collectSettings()
+        local values = {}
+        for _, e in ipairs(configEntries) do
+            local ok, v = pcall(e.get)
+            if ok and v ~= nil then values[e.key] = v end
+        end
+        return { version = 1, values = values }
+    end
+
+    local function applySettings(data)
+        local values = data and data.values
+        if type(values) ~= "table" then return false end
+        for _, e in ipairs(configEntries) do
+            local v = values[e.key]
+            if v ~= nil then
+                local ok, err = pcall(e.set, v)
+                if not ok then
+                    warn("[Check System] Failed to apply '" .. e.key .. "': " .. tostring(err))
+                end
+            end
+        end
+        return true
+    end
+
+    local function makeCard(height)
+        local card = Instance.new("Frame", configPage)
+        card.Size = UDim2.new(1, -10, 0, height)
+        card.BackgroundColor3 = PURPLE_CARD
+        card.BackgroundTransparency = 0.2
+        card.BorderSizePixel = 0
+        Instance.new("UICorner", card).CornerRadius = UDim.new(0, 8)
+        return card
+    end
+
+    local nameCard = makeCard(50)
+    local nameTitle = Instance.new("TextLabel", nameCard)
+    nameTitle.Text = "Config Name"
+    nameTitle.Font = Enum.Font.GothamBold
+    nameTitle.TextSize = 13
+    nameTitle.TextColor3 = TEXT_MAIN
+    nameTitle.Position = UDim2.new(0, 12, 0, 8)
+    nameTitle.Size = UDim2.new(0, 200, 0, 16)
+    nameTitle.TextXAlignment = Enum.TextXAlignment.Left
+    nameTitle.BackgroundTransparency = 1
+
+    local nameDesc = Instance.new("TextLabel", nameCard)
+    nameDesc.Text = "Name used by Save Config (new config)"
+    nameDesc.Font = Enum.Font.Gotham
+    nameDesc.TextSize = 10
+    nameDesc.TextColor3 = TEXT_SUB
+    nameDesc.Position = UDim2.new(0, 12, 0, 26)
+    nameDesc.Size = UDim2.new(0, 200, 0, 14)
+    nameDesc.TextXAlignment = Enum.TextXAlignment.Left
+    nameDesc.BackgroundTransparency = 1
+
+    local nameBox = Instance.new("TextBox", nameCard)
+    nameBox.Size = UDim2.new(0, 180, 0, 26)
+    nameBox.Position = UDim2.new(1, -190, 0, 12)
+    nameBox.Text = ""
+    nameBox.PlaceholderText = "My Config"
+    nameBox.PlaceholderColor3 = TEXT_SUB
+    nameBox.ClearTextOnFocus = false
+    nameBox.Font = Enum.Font.GothamBold
+    nameBox.TextSize = 12
+    nameBox.TextColor3 = PURPLE_ACCENT
+    nameBox.BackgroundColor3 = PURPLE_DARK
+    Instance.new("UICorner", nameBox).CornerRadius = UDim.new(0, 6)
+
+    local listCard = makeCard(160)
+    local listTitle = Instance.new("TextLabel", listCard)
+    listTitle.Text = "Select Config"
+    listTitle.Font = Enum.Font.GothamBold
+    listTitle.TextSize = 13
+    listTitle.TextColor3 = TEXT_MAIN
+    listTitle.Position = UDim2.new(0, 12, 0, 8)
+    listTitle.Size = UDim2.new(0, 200, 0, 16)
+    listTitle.TextXAlignment = Enum.TextXAlignment.Left
+    listTitle.BackgroundTransparency = 1
+
+    local refreshListBtn = Instance.new("TextButton", listCard)
+    refreshListBtn.Text = "Refresh"
+    refreshListBtn.Font = Enum.Font.GothamBold
+    refreshListBtn.TextSize = 11
+    refreshListBtn.TextColor3 = PURPLE_ACCENT
+    refreshListBtn.BackgroundColor3 = PURPLE_DARK
+    refreshListBtn.Size = UDim2.new(0, 64, 0, 22)
+    refreshListBtn.Position = UDim2.new(1, -74, 0, 6)
+    Instance.new("UICorner", refreshListBtn).CornerRadius = UDim.new(0, 6)
+
+    local listScroll = Instance.new("ScrollingFrame", listCard)
+    listScroll.Position = UDim2.new(0, 8, 0, 34)
+    listScroll.Size = UDim2.new(1, -16, 1, -42)
+    listScroll.BackgroundColor3 = PURPLE_DARK
+    listScroll.BackgroundTransparency = 0.3
+    listScroll.BorderSizePixel = 0
+    listScroll.ScrollBarThickness = 3
+    listScroll.ScrollBarImageColor3 = PURPLE_PRIMARY
+    listScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+    listScroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+    Instance.new("UICorner", listScroll).CornerRadius = UDim.new(0, 6)
+    local listLayout = Instance.new("UIListLayout", listScroll)
+    listLayout.Padding = UDim.new(0, 4)
+    local listPad = Instance.new("UIPadding", listScroll)
+    listPad.PaddingTop = UDim.new(0, 4)
+    listPad.PaddingLeft = UDim.new(0, 4)
+    listPad.PaddingRight = UDim.new(0, 4)
+    listPad.PaddingBottom = UDim.new(0, 4)
+
+    local statusCard = makeCard(52)
+    local statusLine = Instance.new("TextLabel", statusCard)
+    statusLine.Font = Enum.Font.GothamBold
+    statusLine.TextSize = 12
+    statusLine.TextColor3 = TEXT_MAIN
+    statusLine.Position = UDim2.new(0, 12, 0, 6)
+    statusLine.Size = UDim2.new(1, -24, 0, 18)
+    statusLine.TextXAlignment = Enum.TextXAlignment.Left
+    statusLine.BackgroundTransparency = 1
+
+    local messageLine = Instance.new("TextLabel", statusCard)
+    messageLine.Font = Enum.Font.Gotham
+    messageLine.TextSize = 11
+    messageLine.TextColor3 = TEXT_SUB
+    messageLine.Position = UDim2.new(0, 12, 0, 26)
+    messageLine.Size = UDim2.new(1, -24, 0, 22)
+    messageLine.TextXAlignment = Enum.TextXAlignment.Left
+    messageLine.TextYAlignment = Enum.TextYAlignment.Top
+    messageLine.TextWrapped = true
+    messageLine.BackgroundTransparency = 1
+    messageLine.Text = hasFS
+        and ("Saving to executor workspace: " .. CONFIG_FOLDER)
+        or "No file access in this executor: configs last only until you leave the game."
+
+    local function say(text)
+        messageLine.Text = text
+        pcall(function()
+            StarterGui:SetCore("SendNotification", { Title = "Config", Text = text, Duration = 3 })
+        end)
+    end
+
+    local function updateStatus()
+        statusLine.Text = "Selected: " .. (selected or "none") .. "   |   Default: " .. (getDefault() or "none")
+    end
+
+    local function rebuildList()
+        for _, c in ipairs(listScroll:GetChildren()) do
+            if not c:IsA("UIListLayout") and not c:IsA("UIPadding") then c:Destroy() end
+        end
+
+        local names = listConfigs()
+        local default = getDefault()
+        local found = false
+
+        for _, name in ipairs(names) do
+            if name == selected then found = true end
+            local btn = Instance.new("TextButton", listScroll)
+            btn.Size = UDim2.new(1, 0, 0, 26)
+            btn.Text = "  " .. name .. (name == default and "   [DEFAULT]" or "")
+            btn.Font = Enum.Font.GothamBold
+            btn.TextSize = 12
+            btn.TextXAlignment = Enum.TextXAlignment.Left
+            btn.TextColor3 = (name == selected) and TEXT_MAIN or TEXT_SUB
+            btn.BackgroundColor3 = (name == selected) and PURPLE_PRIMARY or PURPLE_CARD
+            Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 5)
+            btn.MouseButton1Click:Connect(function()
+                selected = name
+                rebuildList()
+            end)
+        end
+
+        if not found then selected = nil end
+
+        if #names == 0 then
+            local empty = Instance.new("TextLabel", listScroll)
+            empty.Size = UDim2.new(1, 0, 0, 26)
+            empty.BackgroundTransparency = 1
+            empty.Font = Enum.Font.Gotham
+            empty.TextSize = 11
+            empty.TextColor3 = TEXT_SUB
+            empty.Text = "No configs saved yet"
+        end
+
+        updateStatus()
+    end
+
+    refreshListBtn.MouseButton1Click:Connect(rebuildList)
+
+    addButton(configPage, "Save Config", function()
+        local name = sanitizeName(nameBox.Text)
+        if name == "" then
+            say("Type a config name first.")
+            return
+        end
+        if configExists(name) then
+            say('"' .. name .. '" already exists. Select it in the list and use Overwrite Config.')
+            return
+        end
+        local ok, err = writeConfig(name, collectSettings())
+        if ok then
+            selected = name
+            rebuildList()
+            say('Saved config "' .. name .. '".')
+        else
+            say("Save failed: " .. tostring(err))
+        end
+    end)
+
+    addButton(configPage, "Overwrite Config", function()
+        if not selected then
+            say("Select a config in the list first.")
+            return
+        end
+        local ok, err = writeConfig(selected, collectSettings())
+        if ok then
+            say('Overwrote config "' .. selected .. '".')
+        else
+            say("Overwrite failed: " .. tostring(err))
+        end
+    end)
+
+    addButton(configPage, "Load Config", function()
+        if not selected then
+            say("Select a config in the list first.")
+            return
+        end
+        local data, err = readConfig(selected)
+        if not data then
+            say("Load failed: " .. tostring(err))
+            return
+        end
+        if applySettings(data) then
+            say('Loaded config "' .. selected .. '".')
+        else
+            say("Load failed: invalid config data.")
+        end
+    end)
+
+    addButton(configPage, "Set Default Config", function()
+        if not selected then
+            say("Select a config in the list first.")
+            return
+        end
+        local ok, err = setDefault(selected)
+        if ok then
+            rebuildList()
+            say('"' .. selected .. '" will load automatically when the script runs.')
+        else
+            say("Could not set default: " .. tostring(err))
+        end
+    end)
+
+    rebuildList()
+
+    loadDefaultConfig = function()
+        local default = getDefault()
+        if not default then return end
+        local data = readConfig(default)
+        if data and applySettings(data) then
+            selected = default
+            rebuildList()
+            say('Auto-loaded default config "' .. default .. '".')
+        end
+    end
+end
+
+----------------------------------------------------
+-- Character Initialization & Key Bindings
+----------------------------------------------------
+local function setupCharacter(char)
+    local hum = char:WaitForChild("Humanoid")
+    DefaultWalkSpeed = hum.WalkSpeed
+    DefaultJumpPower = hum.JumpPower
+    
+    updateMovement()
+    if FlightState then startFlight() end
+    if NoclipState then toggleNoclip(true) end
+    if CFrameWalkEnabled then toggleCFrameWalk(true) end
+end
+
+player.CharacterAdded:Connect(setupCharacter)
+if player.Character then setupCharacter(player.Character) end
+
+pages["Camera"].Visible = true
+for _, child in ipairs(Sidebar:GetChildren()) do
+    if child:IsA("TextButton") and child.Text:find("Camera") then
+        child.TextColor3 = TEXT_MAIN
+        child.BackgroundColor3 = PURPLE_PRIMARY
+    end
+end
+
+UserInputService.InputBegan:Connect(function(input, gpe)
+    if gpe then return end
+    
+    if KeybindListening then return end
+
+    if input.KeyCode == Enum.KeyCode.RightShift then
+        toggleGuiVisibility()
+    end
+    
+    if input.UserInputType == Enum.UserInputType.Keyboard then
+        if NoclipKey and input.KeyCode == NoclipKey then
+            toggleNoclip(not NoclipState)
+        end
+        if FlightKey and input.KeyCode == FlightKey then
+            toggleFlight(not FlightState)
+        end
+        if AutoTpKey and input.KeyCode == AutoTpKey then
+            setAutoTeleport(not autoTpEnabled)
+        end
+        if FullbrightKey and input.KeyCode == FullbrightKey then
+            toggleFullbright(not FullbrightEnabled)
+        end
+        if MasterESPKey and input.KeyCode == MasterESPKey then
+            setMasterESP(not _G.ESPEnabled)
+        end
+        if FirstPersonKey and input.KeyCode == FirstPersonKey then
+            toggleUnlockFirstPerson(not UnlockFirstPersonEnabled)
+        end
+        if BypassFPKey and input.KeyCode == BypassFPKey then
+            toggleBypassFirstPerson(not BypassFPEnabled)
+        end
+    end
+end)
+
+loadDefaultConfig()
+
+StarterGui:SetCore("SendNotification", {
+    Title = "Check System",
+    Text = "Script executed successfully! (v1.94 Fixed)",
+    Duration = 5
+})
