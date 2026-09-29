@@ -30,13 +30,13 @@ _G.ESPEnabled = false
 _G.ESPShowName = true
 _G.ESPShowItemName = true
 _G.ESPIgnorePlayers = false
-_G.ESPIgnoreNPCs = true                     -- เปิด Ignore Entities ไว้ก่อน (ใช้ Ghost ESP แทน)[cite: 10]
+_G.ESPIgnoreNPCs = true                     -- เปิด Ignore Entities ไว้ (ใช้ Ghost ESP แทน)
 _G.ESPIgnoreGhosts = false
 _G.ESPIgnoreItems = false
-_G.GhostColor = Color3.fromRGB(255, 0, 0)
 _G.FriendColor = Color3.fromRGB(160, 90, 255)
 _G.EnemyColor = Color3.fromRGB(255, 60, 60)
 _G.EntityColor = Color3.fromRGB(255, 170, 0)
+_G.GhostColor = Color3.fromRGB(255, 0, 0)
 _G.UseTeamColor = true
 _G.PlayerColor = nil                        
 _G.ItemColor = Color3.fromRGB(0, 255, 200)  
@@ -613,47 +613,15 @@ local function isInsideCharacter(inst)
     return m ~= nil and m:FindFirstChildOfClass("Humanoid") ~= nil
 end
 
--- ฟังก์ชันตรวจจับ Ghost (จาก Ghost ESP)
-local GHOST_KEYWORDS = { "ghost", "monster", "entity", "demon", "killer", "nextbot" }
-local GHOST_ATTRS    = { "monster", "isghost", "entity" }
-
-local function containsAny(str, list)
-    for _, k in ipairs(list) do
-        if string.find(str, k, 1, true) then return true end
-    end
-    return false
-end
-
-local function isInsidePlayerChar(inst)
-    local p = inst
-    while p and p ~= Workspace do
-        if Players:GetPlayerFromCharacter(p) then return true end
-        p = p.Parent
-    end
-    return false
-end
-
-local function ghostMatch(obj)
-    if not (obj:IsA("Model") or obj:IsA("BasePart")) then return false end
-    if isInsidePlayerChar(obj) then return false end
-
-    if obj:IsA("Model") and obj:FindFirstChildOfClass("AnimationController") then
+local function isGhostInstance(inst)
+    if not inst or not inst.Parent then return false end
+    local name = string.lower(inst.Name)
+    local parentName = string.lower(inst.Parent.Name)
+    if name:find("ghost") or name:find("spirit") or name:find("demon") or name:find("monster") or name:find("entity") then
         return true
     end
-    if containsAny(string.lower(obj.Name), GHOST_KEYWORDS) then
+    if parentName:find("ghosts") or parentName:find("monsters") or parentName:find("entities") then
         return true
-    end
-    for attr in pairs(obj:GetAttributes()) do
-        if containsAny(string.lower(attr), GHOST_ATTRS) then return true end
-    end
-    return false
-end
-
-local function hasTrackedAncestor(inst)
-    local p = inst.Parent
-    while p and p ~= Workspace do
-        if espTracked[p] then return true end
-        p = p.Parent
     end
     return false
 end
@@ -694,44 +662,33 @@ local function createEntry(target, humanoid, isGhost)
     label.Parent = bb
 
     espTracked[target] = {
-        target = target, hum = humanoid, ghost = isGhost, hl = hl, bb = bb, label = label,
+        target = target, hum = humanoid, isGhost = isGhost, hl = hl, bb = bb, label = label,
         part = nil, lastText = "",
     }
 end
 
-local function classifyInstance(inst)
+local function considerInstance(inst)
     if inst:IsA("Humanoid") then
         local model = inst.Parent
-        if model and model:IsA("Model") and model ~= player.Character and not Players:GetPlayerFromCharacter(model) then
-            return model, inst
+        if model and model:IsA("Model") and model ~= player.Character then
+            local isGhost = isGhostInstance(model) or isGhostInstance(inst)
+            createEntry(model, inst, isGhost)
+        end
+    elseif inst:IsA("Model") then
+        if inst ~= player.Character and not Players:GetPlayerFromCharacter(inst) then
+            if isGhostInstance(inst) then
+                local hum = inst:FindFirstChildOfClass("Humanoid")
+                createEntry(inst, hum, true)
+            end
         end
     elseif inst:IsA("ProximityPrompt") or inst:IsA("ClickDetector") then
         local target = inst.Parent
         if target and target:IsA("Attachment") then target = target.Parent end
         if target and target ~= Workspace and not isInsideCharacter(target) then
-            return target, nil
+            createEntry(target, nil, false)
         end
     elseif inst:IsA("Tool") then
-        if not isInsideCharacter(inst) then return inst, nil end
-    end
-    return nil, nil
-end
-
-local function considerInstance(inst)
-    local target, hum = classifyInstance(inst)
-    if target then
-        createEntry(target, hum)
-        if hum and espTracked[target] and ghostMatch(target) then
-            espTracked[target].ghost = true      -- ผีที่มี Humanoid
-        end
-    end
-
-    if (inst:IsA("Model") or inst:IsA("BasePart")) and ghostMatch(inst) then
-        if espTracked[inst] then
-            espTracked[inst].ghost = true
-        elseif not hasTrackedAncestor(inst) then
-            createEntry(inst, nil, true)
-        end
+        if not isInsideCharacter(inst) then createEntry(inst, nil, false) end
     end
 end
 
@@ -748,11 +705,13 @@ local function refreshESP()
             e.part = (e.part and e.part.Parent and e.part) or findPart(target)
 
             local kind, plr = "Item", nil
-            if e.ghost then
-                kind = "Ghost"
-            elseif e.hum then
-                plr = Players:GetPlayerFromCharacter(target)
-                kind = plr and "Player" or "NPC"
+            if e.hum or e.isGhost then
+                if e.isGhost then
+                    kind = "Ghost"
+                else
+                    plr = Players:GetPlayerFromCharacter(target)
+                    kind = plr and "Player" or "NPC"
+                end
             end
 
             local ignored =
@@ -787,7 +746,7 @@ local function refreshESP()
         elseif e.kind == "Ghost" then
             color = _G.GhostColor
             showName = _G.ESPShowName
-            text = "[Entity] " .. e.target.Name
+            text = "[GHOST] " .. e.target.Name
         elseif e.kind == "NPC" then
             color = _G.EntityColor
             showName = _G.ESPShowName
@@ -800,7 +759,7 @@ local function refreshESP()
 
         e.hl.Enabled = i <= MAX_HIGHLIGHTS
         e.hl.FillColor = color
-        e.hl.OutlineColor = (e.kind == "Item" or e.kind == "Ghost") and Color3.new(1, 1, 1) or color
+        e.hl.OutlineColor = (e.kind == "Item") and Color3.new(1, 1, 1) or color
         e.hl.FillTransparency = 1 - _G.ESPFillOpacity
         e.hl.OutlineTransparency = 1 - _G.ESPOutlineOpacity
 
@@ -1338,8 +1297,6 @@ local function registerConfig(key, getter, setter)
 end
 local loadDefaultConfig = function() end   
 
-local toggleControl = {}   -- [title] = { get, set } used by Panic Mode[cite: 10]
-
 local function addToggle(parent, title, desc, default, callback)
     local card = Instance.new("Frame", parent)
     card.Size = UDim2.new(1, -10, 0, 50)
@@ -1806,13 +1763,13 @@ addToggle(espPage, "Show Item Names", "Show name and distance tag on items/inter
 addInput(espPage, "Item Names Text Size", "Text size of item tags", _G.ESPItemTextSize, function(v) _G.ESPItemTextSize = math.clamp(v, 1, 100) end, 8, 32, 1)
 
 addToggle(espPage, "Ignore Players", "Do not highlight real players", false, function(s) _G.ESPIgnorePlayers = s; updateESPState() end)
-addToggle(espPage, "Ignore Entities", "Hide humanoid NPCs (Ghost ESP has its own toggle)", true, function(s) _G.ESPIgnoreNPCs = s; updateESPState() end)
-addToggle(espPage, "Ignore Ghosts", "Do not highlight ghosts / monsters (Ghost ESP)", false, function(s) _G.ESPIgnoreGhosts = s; updateESPState() end)
+addToggle(espPage, "Ignore Entities", "Do not highlight normal NPCs", true, function(s) _G.ESPIgnoreNPCs = s; updateESPState() end)
+addToggle(espPage, "Ignore Ghosts", "Do not highlight Ghosts/Monsters", false, function(s) _G.ESPIgnoreGhosts = s; updateESPState() end)
 addToggle(espPage, "Ignore Items", "Do not highlight items/interactables", false, function(s) _G.ESPIgnoreItems = s; updateESPState() end)
 
 addHexInput(espPage, "Players Color (HEX)", "Empty = original team color", "", function(c) _G.PlayerColor = c; updateESPState() end, "TEAM")
 addHexInput(espPage, "Entities Color (HEX)", "NPC Color", toHex(_G.EntityColor), function(c) _G.EntityColor = c or Color3.fromRGB(255, 170, 0); updateESPState() end, "FFAA00")
-addHexInput(espPage, "Ghost Color (HEX)", "Empty = original red. Also colors the tag", toHex(_G.GhostColor), function(c) _G.GhostColor = c or Color3.fromRGB(255, 0, 0); updateESPState() end, "FF0000")
+addHexInput(espPage, "Ghost Color (HEX)", "Ghost/Monster Highlight Color", toHex(_G.GhostColor), function(c) _G.GhostColor = c or Color3.fromRGB(255, 0, 0); updateESPState() end, "FF0000")
 addHexInput(espPage, "Items Color (HEX)", "Item Color", toHex(_G.ItemColor), function(c) _G.ItemColor = c or Color3.fromRGB(0, 255, 200); updateESPState() end, "00FFC8")
 
 addInput(espPage, "ESP Fill Opacity", "Highlight fill transparency", _G.ESPFillOpacity, function(v) _G.ESPFillOpacity = math.clamp(v, 0, 1) end, 0, 1, 0.05)
