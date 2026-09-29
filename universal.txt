@@ -1,5 +1,5 @@
--- Check System Integrated Client (Master ESP, NPC HP, Item Interact, Ghost ESP & Spectate Edition)
--- Fully Fixed & Merged System (v1.94 Full Edition)
+-- Check System Integrated Client (Master ESP, NPC HP, Item Interact & Ghost ESP Edition)
+-- Fully Optimized & Fixed Toggle State Control System (v1.94 Patch - Spectate System Edition + Keybind Config)
 
 local Players = game:GetService("Players")
 local Lighting = game:GetService("Lighting")
@@ -30,20 +30,20 @@ _G.ESPEnabled = false
 _G.ESPShowName = true
 _G.ESPShowItemName = true
 _G.ESPIgnorePlayers = false
-_G.ESPIgnoreNPCs = true
+_G.ESPIgnoreNPCs = true                     -- เปิด Ignore Entities ไว้ก่อน (ใช้ Ghost ESP แทน)[cite: 10]
 _G.ESPIgnoreGhosts = false
 _G.ESPIgnoreItems = false
+_G.GhostColor = Color3.fromRGB(255, 0, 0)
 _G.FriendColor = Color3.fromRGB(160, 90, 255)
 _G.EnemyColor = Color3.fromRGB(255, 60, 60)
 _G.EntityColor = Color3.fromRGB(255, 170, 0)
-_G.GhostColor = Color3.fromRGB(255, 0, 0)
 _G.UseTeamColor = true
-_G.PlayerColor = nil
-_G.ItemColor = Color3.fromRGB(0, 255, 200)
+_G.PlayerColor = nil                        
+_G.ItemColor = Color3.fromRGB(0, 255, 200)  
 _G.ESPNameTextSize = 14
 _G.ESPItemTextSize = 13
-_G.ESPFillOpacity = 0.5
-_G.ESPOutlineOpacity = 1
+_G.ESPFillOpacity = 0.5                     
+_G.ESPOutlineOpacity = 1                    
 
 local WalkSpeedEnabled = false
 local CustomWalkSpeed = 32
@@ -69,10 +69,8 @@ local LightConnections = {}
 local InstantInteractEnabled = false
 local NoclipConnection = nil
 local NoclipState = false
-local NoclipKey = nil
 
 local FlightState = false
-local FlightKey = nil
 local FlightEnabled = false
 local FlySpeed = 50
 local flyBodyVel, flyBodyGyro, flyRenderConn
@@ -89,11 +87,13 @@ local AutoTpKey = nil
 local FullbrightKey = nil
 local MasterESPKey = nil
 local FirstPersonKey = Enum.KeyCode.RightAlt
+local NoclipKey = nil
+local FlightKey = nil
 
 local BypassFPEnabled = false
 local BypassFPKey = nil
-local BypassSensitivity = 0.25
-local BypassMaxZoom = 60
+local BypassSensitivity = 0.25     
+local BypassMaxZoom = 60           
 local ShowCursorEnabled = true
 
 ----------------------------------------------------
@@ -140,13 +140,13 @@ local function setPlayerProp(name, value)
 end
 
 local function applyFirstPersonUnlock()
-    setPlayerProp("DevEnableMouseLock", true)
-    setPlayerProp("DevComputerCameraMode", Enum.DevComputerCameraMovementMode.UserChoice)
-    setPlayerProp("DevComputerMovementMode", Enum.DevComputerMovementMode.UserChoice)
-    setPlayerProp("CameraMode", Enum.CameraMode.Classic)
-    setPlayerProp("DevCameraOcclusionMode", Enum.DevCameraOcclusionMode.Zoom)
+    setPlayerProp("DevEnableMouseLock", true)                                          
+    setPlayerProp("DevComputerCameraMode", Enum.DevComputerCameraMovementMode.UserChoice)      
+    setPlayerProp("DevComputerMovementMode", Enum.DevComputerMovementMode.UserChoice)  
+    setPlayerProp("CameraMode", Enum.CameraMode.Classic)                               
+    setPlayerProp("DevCameraOcclusionMode", Enum.DevCameraOcclusionMode.Zoom)          
     if player.CameraMinZoomDistance > 0.5 then
-        setPlayerProp("CameraMinZoomDistance", 0.5)
+        setPlayerProp("CameraMinZoomDistance", 0.5)                                    
     end
 end
 
@@ -170,11 +170,11 @@ local function toggleUnlockFirstPerson(state)
     firstPersonLoopToken += 1
 
     if state then
-        applyFirstPersonUnlock()
+        applyFirstPersonUnlock()          
         local myToken = firstPersonLoopToken
         task.spawn(function()
             while myToken == firstPersonLoopToken do
-                task.wait(0.25)
+                task.wait(0.25)           
                 applyFirstPersonUnlock()
             end
         end)
@@ -479,10 +479,12 @@ end
 ----------------------------------------------------
 -- 4.5 Spectate System
 ----------------------------------------------------
+local SpectateEnabled = false
 local SpectateTarget = nil
 local SpectateSaved = nil
 local spectateConns = {}
 local setSpectateTarget
+local SpectateUiRefresh = nil
 
 local function spectateDisconnectAll()
     for _, c in ipairs(spectateConns) do c:Disconnect() end
@@ -506,7 +508,7 @@ end
 
 local function spectateApply(target)
     local cam = Workspace.CurrentCamera
-    local char = target and target.Character
+    local char = target.Character
     if not cam or not char then return end
     local hum = char:FindFirstChildOfClass("Humanoid") or char:WaitForChild("Humanoid", 3)
     if not hum then return end
@@ -538,15 +540,54 @@ local function spectateApply(target)
 end
 
 setSpectateTarget = function(target)
-    if target and target ~= player then
-        spectateApply(target)
-    else
+    if target == player then target = nil end
+    if not target then
         stopSpectate(true)
+        return
+    end
+    spectateApply(target)
+end
+
+local function toggleSpectate(state)
+    SpectateEnabled = state
+    if not state then
+        stopSpectate(true)
+    end
+    if toggleUiUpdaters["Spectate Mode"] then
+        toggleUiUpdaters["Spectate Mode"](state)
     end
 end
 
+local function spectateCycle(step)
+    if not SpectateEnabled then return end
+    local list = {}
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= player then list[#list + 1] = p end
+    end
+    if #list == 0 then return end
+
+    local idx = 1
+    if SpectateTarget then
+        for i, p in ipairs(list) do
+            if p == SpectateTarget then idx = i break end
+        end
+    end
+    idx = ((idx - 1 + step) % #list) + 1
+    setSpectateTarget(list[idx])
+    if SpectateUiRefresh then SpectateUiRefresh() end
+end
+
+player.CharacterAdded:Connect(function()
+    if SpectateEnabled and SpectateTarget then
+        task.wait(0.5)
+        if SpectateEnabled and SpectateTarget then
+            spectateApply(SpectateTarget)
+        end
+    end
+end)
+
 ----------------------------------------------------
--- 5. Master ESP (Optimized, Ghost ESP integrated)
+-- 5. Master ESP & Ghost ESP System
 ----------------------------------------------------
 _G.ESPMaxDistance = _G.ESPMaxDistance or 2000
 
@@ -572,6 +613,51 @@ local function isInsideCharacter(inst)
     return m ~= nil and m:FindFirstChildOfClass("Humanoid") ~= nil
 end
 
+-- ฟังก์ชันตรวจจับ Ghost (จาก Ghost ESP)
+local GHOST_KEYWORDS = { "ghost", "monster", "entity", "demon", "killer", "nextbot" }
+local GHOST_ATTRS    = { "monster", "isghost", "entity" }
+
+local function containsAny(str, list)
+    for _, k in ipairs(list) do
+        if string.find(str, k, 1, true) then return true end
+    end
+    return false
+end
+
+local function isInsidePlayerChar(inst)
+    local p = inst
+    while p and p ~= Workspace do
+        if Players:GetPlayerFromCharacter(p) then return true end
+        p = p.Parent
+    end
+    return false
+end
+
+local function ghostMatch(obj)
+    if not (obj:IsA("Model") or obj:IsA("BasePart")) then return false end
+    if isInsidePlayerChar(obj) then return false end
+
+    if obj:IsA("Model") and obj:FindFirstChildOfClass("AnimationController") then
+        return true
+    end
+    if containsAny(string.lower(obj.Name), GHOST_KEYWORDS) then
+        return true
+    end
+    for attr in pairs(obj:GetAttributes()) do
+        if containsAny(string.lower(attr), GHOST_ATTRS) then return true end
+    end
+    return false
+end
+
+local function hasTrackedAncestor(inst)
+    local p = inst.Parent
+    while p and p ~= Workspace do
+        if espTracked[p] then return true end
+        p = p.Parent
+    end
+    return false
+end
+
 local function removeEntry(target)
     local e = espTracked[target]
     if not e then return end
@@ -580,7 +666,7 @@ local function removeEntry(target)
     if e.bb then e.bb:Destroy() end
 end
 
-local function createEntry(target, humanoid)
+local function createEntry(target, humanoid, isGhost)
     if espTracked[target] or not espFolder then return end
 
     local hl = Instance.new("Highlight")
@@ -608,25 +694,44 @@ local function createEntry(target, humanoid)
     label.Parent = bb
 
     espTracked[target] = {
-        target = target, hum = humanoid, hl = hl, bb = bb, label = label,
+        target = target, hum = humanoid, ghost = isGhost, hl = hl, bb = bb, label = label,
         part = nil, lastText = "",
     }
 end
 
-local function considerInstance(inst)
+local function classifyInstance(inst)
     if inst:IsA("Humanoid") then
         local model = inst.Parent
-        if model and model:IsA("Model") and model ~= player.Character then
-            createEntry(model, inst)
+        if model and model:IsA("Model") and model ~= player.Character and not Players:GetPlayerFromCharacter(model) then
+            return model, inst
         end
     elseif inst:IsA("ProximityPrompt") or inst:IsA("ClickDetector") then
         local target = inst.Parent
         if target and target:IsA("Attachment") then target = target.Parent end
         if target and target ~= Workspace and not isInsideCharacter(target) then
-            createEntry(target, nil)
+            return target, nil
         end
     elseif inst:IsA("Tool") then
-        if not isInsideCharacter(inst) then createEntry(inst, nil) end
+        if not isInsideCharacter(inst) then return inst, nil end
+    end
+    return nil, nil
+end
+
+local function considerInstance(inst)
+    local target, hum = classifyInstance(inst)
+    if target then
+        createEntry(target, hum)
+        if hum and espTracked[target] and ghostMatch(target) then
+            espTracked[target].ghost = true      -- ผีที่มี Humanoid
+        end
+    end
+
+    if (inst:IsA("Model") or inst:IsA("BasePart")) and ghostMatch(inst) then
+        if espTracked[inst] then
+            espTracked[inst].ghost = true
+        elseif not hasTrackedAncestor(inst) then
+            createEntry(inst, nil, true)
+        end
     end
 end
 
@@ -643,21 +748,17 @@ local function refreshESP()
             e.part = (e.part and e.part.Parent and e.part) or findPart(target)
 
             local kind, plr = "Item", nil
-            if e.hum then
+            if e.ghost then
+                kind = "Ghost"
+            elseif e.hum then
                 plr = Players:GetPlayerFromCharacter(target)
-                if plr then
-                    kind = "Player"
-                elseif target.Name:lower():find("ghost") or target:FindFirstChild("Ghost") then
-                    kind = "Ghost"
-                else
-                    kind = "NPC"
-                end
+                kind = plr and "Player" or "NPC"
             end
 
             local ignored =
                 (kind == "Player" and _G.ESPIgnorePlayers) or
-                (kind == "Ghost"  and _G.ESPIgnoreGhosts) or
                 (kind == "NPC"    and _G.ESPIgnoreNPCs) or
+                (kind == "Ghost"  and _G.ESPIgnoreGhosts) or
                 (kind == "Item"   and _G.ESPIgnoreItems) or
                 plr == player
 
@@ -686,11 +787,11 @@ local function refreshESP()
         elseif e.kind == "Ghost" then
             color = _G.GhostColor
             showName = _G.ESPShowName
-            text = string.format("%s [Ghost] | HP: %d", e.target.Name, e.hum.MaxHealth > 0 and math.floor(e.hum.Health) or 0)
+            text = "[Entity] " .. e.target.Name
         elseif e.kind == "NPC" then
             color = _G.EntityColor
             showName = _G.ESPShowName
-            text = string.format("%s | HP: %d", e.target.Name, e.hum.MaxHealth > 0 and math.floor(e.hum.Health) or 0)
+            text = string.format("%s | HP: %d", e.target.Name, e.hum and e.hum.MaxHealth > 0 and math.floor(e.hum.Health) or 0)
         else
             color = _G.ItemColor
             showName = _G.ESPShowItemName
@@ -699,7 +800,7 @@ local function refreshESP()
 
         e.hl.Enabled = i <= MAX_HIGHLIGHTS
         e.hl.FillColor = color
-        e.hl.OutlineColor = (e.kind == "Item") and Color3.new(1, 1, 1) or color
+        e.hl.OutlineColor = (e.kind == "Item" or e.kind == "Ghost") and Color3.new(1, 1, 1) or color
         e.hl.FillTransparency = 1 - _G.ESPFillOpacity
         e.hl.OutlineTransparency = 1 - _G.ESPOutlineOpacity
 
@@ -714,7 +815,7 @@ local function refreshESP()
                 e.bb.Size = UDim2.new(0, 300, 0, size + 8)
             end
             text = string.format("%s [%dm]", text, math.floor(e.dist))
-            if text ~= e.lastText then
+            if text ~= e.lastText then   
                 e.label.Text = text
                 e.lastText = text
             end
@@ -738,7 +839,7 @@ local function setESPEnabled(state)
 
     espFolder = Instance.new("Folder")
     espFolder.Name = "ESPContainer"
-    espFolder.Parent = camera
+    espFolder.Parent = camera          
 
     table.insert(espConns, Workspace.DescendantAdded:Connect(considerInstance))
     table.insert(espConns, Workspace.DescendantRemoving:Connect(function(inst)
@@ -864,7 +965,7 @@ Header.Position = UDim2.new(0, 20, 0, 10)
 Header.BackgroundTransparency = 1
 
 local Title = Instance.new("TextLabel", Header)
-Title.Text = "Check System v.1.94 (Fixed & Integrated)"
+Title.Text = "Check System v.1.94 (Fixed & Ghost ESP Edition)"
 Title.Font = Enum.Font.GothamBold
 Title.TextSize = 18
 Title.TextColor3 = TEXT_MAIN
@@ -883,7 +984,7 @@ Subtitle.Size = UDim2.new(0, 300, 0, 18)
 Subtitle.BackgroundTransparency = 1
 
 local CloseBtn = Instance.new("TextButton", Header)
-CloseBtn.Text = "×"
+CloseBtn.Text = "\u{00D7}"
 CloseBtn.Font = Enum.Font.GothamBold
 CloseBtn.TextSize = 24
 CloseBtn.TextColor3 = TEXT_SUB
@@ -932,7 +1033,7 @@ RunService:BindToRenderStep("CheckSystemMouseFree", Enum.RenderPriority.Camera.V
         ModalUnlock.Modal = not looking
     end
 
-    if looking then return end
+    if looking then return end   
 
     if UserInputService.MouseBehavior == Enum.MouseBehavior.LockCenter then
         UserInputService.MouseBehavior = Enum.MouseBehavior.Default
@@ -947,7 +1048,7 @@ end)
 ----------------------------------------------------
 local bypassYaw, bypassPitch = 0, 0
 local bypassZoom, bypassZoomTarget = 0, 0
-local bypassSaved = setmetatable({}, { __mode = "k" })
+local bypassSaved = setmetatable({}, { __mode = "k" })   
 
 local BODY_PARTS = {
     Head = true, Torso = true,
@@ -1069,13 +1170,13 @@ RunService:BindToRenderStep("CheckSystemBypassFP", Enum.RenderPriority.Camera.Va
     bypassZoom = bypassZoom + (bypassZoomTarget - bypassZoom) * (1 - math.exp(-dt * 14))
     if math.abs(bypassZoom - bypassZoomTarget) < 0.02 then bypassZoom = bypassZoomTarget end
 
-    local firstPersonView = bypassZoom < 1.5
-    local firstPersonMouse = bypassZoomTarget < 1.5
+    local firstPersonView = bypassZoom < 1.5        
+    local firstPersonMouse = bypassZoomTarget < 1.5 
 
     local menuOpen = MainFrame.Visible
     local rmb = UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton2)
     local rotating = rmb or (firstPersonMouse and not menuOpen)
-    if UserInputService:GetFocusedTextBox() then rotating = false end
+    if UserInputService:GetFocusedTextBox() then rotating = false end   
 
     if rotating then
         UserInputService.MouseBehavior = (firstPersonMouse and not menuOpen)
@@ -1111,7 +1212,7 @@ end)
 local CursorGui = Instance.new("ScreenGui")
 CursorGui.Name = "CheckSystemCursor"
 CursorGui.ResetOnSpawn = false
-CursorGui.IgnoreGuiInset = true
+CursorGui.IgnoreGuiInset = true      
 CursorGui.DisplayOrder = 1000
 mountGui(CursorGui)
 
@@ -1231,14 +1332,13 @@ addTabButton("Teleport")
 addTabButton("Checks")
 addTabButton("Config")
 
-----------------------------------------------------
--- Config Registry & Control Builders
-----------------------------------------------------
 local configEntries = {}
 local function registerConfig(key, getter, setter)
     configEntries[#configEntries + 1] = { key = key, get = getter, set = setter }
 end
-local loadDefaultConfig = function() end
+local loadDefaultConfig = function() end   
+
+local toggleControl = {}   -- [title] = { get, set } used by Panic Mode[cite: 10]
 
 local function addToggle(parent, title, desc, default, callback)
     local card = Instance.new("Frame", parent)
@@ -1620,7 +1720,7 @@ local function addHexInput(parent, title, desc, defaultHex, callback, placeholde
             setPreview(color)
             callback(color)
         else
-            input.Text = lastText
+            input.Text = lastText   
         end
     end
 
@@ -1653,9 +1753,6 @@ local function addButton(parent, title, callback)
     btn.MouseButton1Click:Connect(callback)
 end
 
-----------------------------------------------------
--- Hotkey Helpers
-----------------------------------------------------
 local function setAutoTeleport(state)
     autoTpEnabled = state
     if toggleUiUpdaters["Auto Teleport"] then
@@ -1674,7 +1771,6 @@ end
 ----------------------------------------------------
 -- Features Registration
 ----------------------------------------------------
--- Camera
 addToggle(camPage, "Unlock Camera", "Unlock camera distance limits", false, function(s) UnlockCameraEnabled = s end)
 addInput(camPage, "Camera Distance", "Max camera zoom distance", CameraMaxDistance, function(v) CameraMaxDistance = v end, 10, 5000, 10)
 addToggle(camPage, "Unlock First Person", "Unlock first person, shiftlock and zoom", false, function(s) toggleUnlockFirstPerson(s) end)
@@ -1684,10 +1780,7 @@ addKeybind(camPage, "Bypass First Person Keybind", "Press key to toggle Bypass F
 addInput(camPage, "Bypass Sensitivity", "Mouse sensitivity of Bypass First Person", BypassSensitivity, function(v) BypassSensitivity = math.clamp(v, 0.01, 5) end, 0.05, 1, 0.01)
 addInput(camPage, "Bypass Max Zoom", "How far the Bypass camera can zoom out (studs)", BypassMaxZoom, function(v) BypassMaxZoom = math.clamp(v, 5, 2000) end, 5, 500, 5)
 addToggle(camPage, "Show Cursor", "Draw a cursor while the menu is open", true, function(s) ShowCursorEnabled = s end)
-addToggle(camPage, "FOV Changer", "Change camera Field Of View", false, function(s) Ext.toggleFOV(s) end)
-addInput(camPage, "FOV Value", "Set custom Field Of View", 70, function(v) Ext.setFOV(v) end, 1, 120, 1)
 
--- Movement
 addToggle(movePage, "Infinite Jump", "Jump infinitely in the air", false, function(s) InfiniteJumpEnabled = s end)
 addToggle(movePage, "Enable WalkSpeed", "Apply custom WalkSpeed", false, function(s) WalkSpeedEnabled = s; updateMovement() end)
 addInput(movePage, "WalkSpeed Value", "Set WalkSpeed amount", CustomWalkSpeed, function(v) CustomWalkSpeed = v; updateMovement() end, 0, 500, 1)
@@ -1695,15 +1788,15 @@ addToggle(movePage, "CFrame Walk", "Walk using CFrame (Bypasses movement checks)
 addToggle(movePage, "Enable JumpPower", "Apply custom JumpPower", false, function(s) JumpPowerEnabled = s; updateMovement() end)
 addInput(movePage, "JumpPower Value", "Set JumpPower amount", CustomJumpPower, function(v) CustomJumpPower = v; updateMovement() end, 0, 500, 1)
 
--- Visual
 addToggle(visPage, "Instant Interact", "Bypass proximity prompt hold time", false, function(s) InstantInteractEnabled = s end)
 addToggle(visPage, "Fullbright", "Remove dark fog and shadows", false, function(s) toggleFullbright(s) end)
 addKeybind(visPage, "Fullbright Keybind", "Press key to toggle Fullbright", nil, function(k) FullbrightKey = k end)
 addInput(visPage, "Light Intensity", "Adjust brightness level", LightIntensity, function(v) LightIntensity = v; if FullbrightEnabled then applyFullbright() end end, 0, 1, 0.05)
-addToggle(visPage, "Remove Fog", "Clear atmospheric fog and blur effects", false, function(s) Ext.toggleRemoveFog(s) end)
+addToggle(visPage, "Remove Fog", "Remove atmosphere and fog effects", false, function(s) Ext.toggleRemoveFog(s) end)
+addToggle(visPage, "FOV Changer", "Enable custom field of view", false, function(s) Ext.toggleFOV(s) end)
+addInput(visPage, "FOV Value", "Set custom field of view angle", 70, function(v) Ext.setFOV(v) end, 10, 120, 1)
 
--- ESP
-addToggle(espPage, "Master ESP", "Enable players, entities and items highlights", false, function(s) setMasterESP(s) end)
+addToggle(espPage, "Master ESP", "Enable players, entities, ghosts and items highlights", false, function(s) setMasterESP(s) end)
 addKeybind(espPage, "Master ESP Keybind", "Press key to toggle Master ESP", nil, function(k) MasterESPKey = k end)
 addInput(espPage, "ESP Max Distance", "Max ESP render distance (studs)", _G.ESPMaxDistance, function(v) _G.ESPMaxDistance = v end, 50, 10000, 50)
 
@@ -1713,19 +1806,18 @@ addToggle(espPage, "Show Item Names", "Show name and distance tag on items/inter
 addInput(espPage, "Item Names Text Size", "Text size of item tags", _G.ESPItemTextSize, function(v) _G.ESPItemTextSize = math.clamp(v, 1, 100) end, 8, 32, 1)
 
 addToggle(espPage, "Ignore Players", "Do not highlight real players", false, function(s) _G.ESPIgnorePlayers = s; updateESPState() end)
-addToggle(espPage, "Ignore Entities", "Do not highlight NPCs/Entities", true, function(s) _G.ESPIgnoreNPCs = s; updateESPState() end)
-addToggle(espPage, "Ignore Ghosts", "Do not highlight Ghosts", false, function(s) _G.ESPIgnoreGhosts = s; updateESPState() end)
+addToggle(espPage, "Ignore Entities", "Hide humanoid NPCs (Ghost ESP has its own toggle)", true, function(s) _G.ESPIgnoreNPCs = s; updateESPState() end)
+addToggle(espPage, "Ignore Ghosts", "Do not highlight ghosts / monsters (Ghost ESP)", false, function(s) _G.ESPIgnoreGhosts = s; updateESPState() end)
 addToggle(espPage, "Ignore Items", "Do not highlight items/interactables", false, function(s) _G.ESPIgnoreItems = s; updateESPState() end)
 
-addHexInput(espPage, "Players Color (HEX)", "Empty = original team color. Also colors the tag", "", function(c) _G.PlayerColor = c; updateESPState() end, "TEAM")
-addHexInput(espPage, "Entities Color (HEX)", "Empty = original color. Also colors the tag", toHex(_G.EntityColor), function(c) _G.EntityColor = c or Color3.fromRGB(255, 170, 0); updateESPState() end, "FFAA00")
-addHexInput(espPage, "Ghosts Color (HEX)", "Empty = original color. Also colors the tag", toHex(_G.GhostColor), function(c) _G.GhostColor = c or Color3.fromRGB(255, 0, 0); updateESPState() end, "FF0000")
-addHexInput(espPage, "Items Color (HEX)", "Empty = original color. Also colors the tag", toHex(_G.ItemColor), function(c) _G.ItemColor = c or Color3.fromRGB(0, 255, 200); updateESPState() end, "00FFC8")
+addHexInput(espPage, "Players Color (HEX)", "Empty = original team color", "", function(c) _G.PlayerColor = c; updateESPState() end, "TEAM")
+addHexInput(espPage, "Entities Color (HEX)", "NPC Color", toHex(_G.EntityColor), function(c) _G.EntityColor = c or Color3.fromRGB(255, 170, 0); updateESPState() end, "FFAA00")
+addHexInput(espPage, "Ghost Color (HEX)", "Empty = original red. Also colors the tag", toHex(_G.GhostColor), function(c) _G.GhostColor = c or Color3.fromRGB(255, 0, 0); updateESPState() end, "FF0000")
+addHexInput(espPage, "Items Color (HEX)", "Item Color", toHex(_G.ItemColor), function(c) _G.ItemColor = c or Color3.fromRGB(0, 255, 200); updateESPState() end, "00FFC8")
 
-addInput(espPage, "ESP Fill Opacity", "Highlight fill (0 = clear, 1 = solid)", _G.ESPFillOpacity, function(v) _G.ESPFillOpacity = math.clamp(v, 0, 1) end, 0, 1, 0.05)
-addInput(espPage, "ESP Outline Opacity", "Highlight outline (0 = clear, 1 = solid)", _G.ESPOutlineOpacity, function(v) _G.ESPOutlineOpacity = math.clamp(v, 0, 1) end, 0, 1, 0.05)
+addInput(espPage, "ESP Fill Opacity", "Highlight fill transparency", _G.ESPFillOpacity, function(v) _G.ESPFillOpacity = math.clamp(v, 0, 1) end, 0, 1, 0.05)
+addInput(espPage, "ESP Outline Opacity", "Highlight outline transparency", _G.ESPOutlineOpacity, function(v) _G.ESPOutlineOpacity = math.clamp(v, 0, 1) end, 0, 1, 0.05)
 
--- Teleport & Spectate Window
 addToggle(tpPage, "Auto Teleport", "Loop teleport to saved position", false, function(s) setAutoTeleport(s) end)
 addKeybind(tpPage, "Auto Teleport Keybind", "Press key to toggle Auto Teleport", nil, function(k) AutoTpKey = k end)
 addToggle(tpPage, "Ctrl + Click TP", "Teleport to mouse click location", false, function(s) ctrlTpEnabled = s end)
@@ -1740,112 +1832,99 @@ addButton(tpPage, "Teleport to Saved Position", function()
     end
 end)
 
-local PlayerListFrame = Instance.new("Frame", MainFrame)
-PlayerListFrame.Size = UDim2.new(0, 230, 1, -85)
-PlayerListFrame.Position = UDim2.new(1, 10, 0, 75)
-PlayerListFrame.BackgroundColor3 = PURPLE_DARK
-PlayerListFrame.Visible = false
-Instance.new("UICorner", PlayerListFrame).CornerRadius = UDim.new(0, 10)
+local SpectateFrame = Instance.new("Frame", MainFrame)
+SpectateFrame.Size = UDim2.new(0, 220, 1, -85)
+SpectateFrame.Position = UDim2.new(1, 10, 0, 75)
+SpectateFrame.BackgroundColor3 = PURPLE_DARK
+SpectateFrame.Visible = false
+Instance.new("UICorner", SpectateFrame).CornerRadius = UDim.new(0, 10)
 
-local plStroke = Instance.new("UIStroke", PlayerListFrame)
-plStroke.Color = PURPLE_PRIMARY
-plStroke.Thickness = 1.2
+local spStroke = Instance.new("UIStroke", SpectateFrame)
+spStroke.Color = PURPLE_PRIMARY
+spStroke.Thickness = 1.2
 
-local plTitle = Instance.new("TextLabel", PlayerListFrame)
-plTitle.Text = "Player Control Window"
-plTitle.Font = Enum.Font.GothamBold
-plTitle.TextSize = 13
-plTitle.TextColor3 = TEXT_MAIN
-plTitle.Size = UDim2.new(0, 160, 0, 30)
-plTitle.Position = UDim2.new(0, 10, 0, 0)
-plTitle.TextXAlignment = Enum.TextXAlignment.Left
-plTitle.BackgroundTransparency = 1
+local spTitle = Instance.new("TextLabel", SpectateFrame)
+spTitle.Text = "Spectate System"
+spTitle.Font = Enum.Font.GothamBold
+spTitle.TextSize = 13
+spTitle.TextColor3 = TEXT_MAIN
+spTitle.Size = UDim2.new(0, 150, 0, 30)
+spTitle.Position = UDim2.new(0, 10, 0, 0)
+spTitle.TextXAlignment = Enum.TextXAlignment.Left
+spTitle.BackgroundTransparency = 1
 
-local refreshBtn = Instance.new("TextButton", PlayerListFrame)
-refreshBtn.Text = "↻"
-refreshBtn.Font = Enum.Font.GothamBold
-refreshBtn.TextSize = 14
-refreshBtn.TextColor3 = TEXT_SUB
-refreshBtn.Size = UDim2.new(0, 24, 0, 24)
-refreshBtn.Position = UDim2.new(1, -30, 0, 3)
-refreshBtn.BackgroundTransparency = 1
+local spRefreshBtn = Instance.new("TextButton", SpectateFrame)
+spRefreshBtn.Text = "\u{21BB}"
+spRefreshBtn.Font = Enum.Font.GothamBold
+spRefreshBtn.TextSize = 14
+spRefreshBtn.TextColor3 = TEXT_SUB
+spRefreshBtn.Size = UDim2.new(0, 24, 0, 24)
+spRefreshBtn.Position = UDim2.new(1, -30, 0, 3)
+spRefreshBtn.BackgroundTransparency = 1
 
-local plScroll = Instance.new("ScrollingFrame", PlayerListFrame)
-plScroll.Size = UDim2.new(1, -12, 1, -40)
-plScroll.Position = UDim2.new(0, 6, 0, 35)
-plScroll.BackgroundTransparency = 1
-plScroll.ScrollBarThickness = 2
-plScroll.ScrollBarImageColor3 = PURPLE_PRIMARY
+local spScroll = Instance.new("ScrollingFrame", SpectateFrame)
+spScroll.Size = UDim2.new(1, -12, 1, -80)
+spScroll.Position = UDim2.new(0, 6, 0, 35)
+spScroll.BackgroundTransparency = 1
+spScroll.ScrollBarThickness = 2
+spScroll.ScrollBarImageColor3 = PURPLE_PRIMARY
 
-local plLayout = Instance.new("UIListLayout", plScroll)
-plLayout.Padding = UDim.new(0, 4)
+local spLayout = Instance.new("UIListLayout", spScroll)
+spLayout.Padding = UDim.new(0, 4)
 
-local function refreshPlayers()
-    for _, child in ipairs(plScroll:GetChildren()) do
-        if not child:IsA("UIListLayout") then child:Destroy() end
+local function refreshSpectatePlayers()
+    for _, child in ipairs(spScroll:GetChildren()) do
+        if child:IsA("TextButton") then child:Destroy() end
     end
     for _, target in ipairs(Players:GetPlayers()) do
         if target ~= player then
-            local card = Instance.new("Frame", plScroll)
-            card.Size = UDim2.new(1, 0, 0, 28)
-            card.BackgroundColor3 = PURPLE_CARD
-            Instance.new("UICorner", card).CornerRadius = UDim.new(0, 4)
+            local btn = Instance.new("TextButton", spScroll)
+            btn.Size = UDim2.new(1, 0, 0, 26)
+            btn.Text = "  " .. target.DisplayName
+            btn.Font = Enum.Font.Gotham
+            btn.TextSize = 11
+            btn.TextColor3 = TEXT_MAIN
+            btn.BackgroundColor3 = PURPLE_CARD
+            Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 4)
 
-            local pLabel = Instance.new("TextLabel", card)
-            pLabel.Text = "  " .. target.DisplayName
-            pLabel.Font = Enum.Font.Gotham
-            pLabel.TextSize = 11
-            pLabel.TextColor3 = TEXT_MAIN
-            pLabel.Size = UDim2.new(1, -100, 1, 0)
-            pLabel.TextXAlignment = Enum.TextXAlignment.Left
-            pLabel.BackgroundTransparency = 1
-
-            local tpBtn = Instance.new("TextButton", card)
-            tpBtn.Size = UDim2.new(0, 42, 0, 20)
-            tpBtn.Position = UDim2.new(1, -94, 0.5, -10)
-            tpBtn.Text = "TP"
-            tpBtn.Font = Enum.Font.GothamBold
-            tpBtn.TextSize = 10
-            tpBtn.TextColor3 = TEXT_MAIN
-            tpBtn.BackgroundColor3 = PURPLE_PRIMARY
-            Instance.new("UICorner", tpBtn).CornerRadius = UDim.new(0, 4)
-
-            tpBtn.MouseButton1Click:Connect(function()
-                if target.Character and target.Character:FindFirstChild("HumanoidRootPart") and player.Character then
-                    player.Character:MoveTo(target.Character.HumanoidRootPart.Position)
-                end
-            end)
-
-            local specBtn = Instance.new("TextButton", card)
-            specBtn.Size = UDim2.new(0, 46, 0, 20)
-            specBtn.Position = UDim2.new(1, -48, 0.5, -10)
-            specBtn.Text = (SpectateTarget == target) and "Unspec" or "Spec"
-            specBtn.Font = Enum.Font.GothamBold
-            specBtn.TextSize = 10
-            specBtn.TextColor3 = TEXT_MAIN
-            specBtn.BackgroundColor3 = (SpectateTarget == target) and Color3.fromRGB(200, 50, 50) or PURPLE_DARK
-            Instance.new("UICorner", specBtn).CornerRadius = UDim.new(0, 4)
-
-            specBtn.MouseButton1Click:Connect(function()
-                if SpectateTarget == target then
-                    setSpectateTarget(nil)
-                else
-                    setSpectateTarget(target)
-                end
-                refreshPlayers()
+            btn.MouseButton1Click:Connect(function()
+                setSpectateTarget(target)
             end)
         end
     end
 end
 
-refreshBtn.MouseButton1Click:Connect(refreshPlayers)
+SpectateUiRefresh = refreshSpectatePlayers
+spRefreshBtn.MouseButton1Click:Connect(refreshSpectatePlayers)
 
-addButton(tpPage, "Toggle Player Control Window", function()
-    PlayerListFrame.Visible = not PlayerListFrame.Visible
-    if PlayerListFrame.Visible then refreshPlayers() end
+local spPrevBtn = Instance.new("TextButton", SpectateFrame)
+spPrevBtn.Size = UDim2.new(0.5, -4, 0, 32)
+spPrevBtn.Position = UDim2.new(0, 2, 1, -36)
+spPrevBtn.Text = "< Prev"
+spPrevBtn.Font = Enum.Font.GothamBold
+spPrevBtn.TextSize = 11
+spPrevBtn.TextColor3 = TEXT_MAIN
+spPrevBtn.BackgroundColor3 = PURPLE_CARD
+Instance.new("UICorner", spPrevBtn).CornerRadius = UDim.new(0, 6)
+spPrevBtn.MouseButton1Click:Connect(function() spectateCycle(-1) end)
+
+local spNextBtn = Instance.new("TextButton", SpectateFrame)
+spNextBtn.Size = UDim2.new(0.5, -4, 0, 32)
+spNextBtn.Position = UDim2.new(0.5, 2, 1, -36)
+spNextBtn.Text = "Next >"
+spNextBtn.Font = Enum.Font.GothamBold
+spNextBtn.TextSize = 11
+spNextBtn.TextColor3 = TEXT_MAIN
+spNextBtn.BackgroundColor3 = PURPLE_CARD
+Instance.new("UICorner", spNextBtn).CornerRadius = UDim.new(0, 6)
+spNextBtn.MouseButton1Click:Connect(function() spectateCycle(1) end)
+
+addToggle(tpPage, "Spectate Mode", "Spectate other players in server", false, function(s) toggleSpectate(s) end)
+addButton(tpPage, "Toggle Spectate Window", function()
+    SpectateFrame.Visible = not SpectateFrame.Visible
+    if SpectateFrame.Visible then refreshSpectatePlayers() end
 end)
 
--- Checks
 addToggle(sysPage, "NoClip", "Walk through walls", false, function(s) toggleNoclip(s) end)
 addKeybind(sysPage, "NoClip Keybind", "Press key to toggle NoClip", nil, function(k) NoclipKey = k end)
 
@@ -1854,7 +1933,7 @@ addKeybind(sysPage, "Flight Keybind", "Press key to toggle Flight", nil, functio
 addInput(sysPage, "Fly Speed", "Speed of flight movement", FlySpeed, function(v) FlySpeed = v end, 1, 500, 1)
 
 ----------------------------------------------------
--- 8. Config System (Save / Overwrite / Load / Set Default)
+-- 8. Config System
 ----------------------------------------------------
 do
     local HttpService = game:GetService("HttpService")
@@ -1864,7 +1943,7 @@ do
     local DEFAULT_FILE = CONFIG_DIR .. "/default.txt"
 
     local hasFS = (writefile and readfile and isfile and isfolder and makefolder and listfiles) ~= nil
-    local memConfigs, memDefault = {}, nil
+    local memConfigs, memDefault = {}, nil   
 
     local selected = nil
 
@@ -2097,7 +2176,7 @@ do
     messageLine.BackgroundTransparency = 1
     messageLine.Text = hasFS
         and ("Saving to executor workspace: " .. CONFIG_FOLDER)
-        or "No file access in this executor: configs last only until you leave the game."
+        or "No file access in this executor."
 
     local function say(text)
         messageLine.Text = text
@@ -2160,7 +2239,7 @@ do
             return
         end
         if configExists(name) then
-            say('"' .. name .. '" already exists. Select it in the list and use Overwrite Config.')
+            say('"' .. name .. '" already exists. Select it and use Overwrite.')
             return
         end
         local ok, err = writeConfig(name, collectSettings())
@@ -2211,7 +2290,7 @@ do
         local ok, err = setDefault(selected)
         if ok then
             rebuildList()
-            say('"' .. selected .. '" will load automatically when the script runs.')
+            say('"' .. selected .. '" will load automatically.')
         else
             say("Could not set default: " .. tostring(err))
         end
@@ -2259,7 +2338,7 @@ end
 UserInputService.InputBegan:Connect(function(input, gpe)
     if gpe then return end
     
-    if KeybindListening then return end
+    if KeybindListening then return end   
 
     if input.KeyCode == Enum.KeyCode.RightShift then
         toggleGuiVisibility()
@@ -2293,7 +2372,7 @@ end)
 loadDefaultConfig()
 
 StarterGui:SetCore("SendNotification", {
-    Title = "Check System",
-    Text = "Script executed successfully! (v1.94 Fixed)",
+    Title = "Check System v1.94",
+    Text = "Script executed successfully with Config & Ghost ESP!",
     Duration = 5
 })
