@@ -1,4 +1,4 @@
--- Check System Integrated Client (Master ESP, NPC HP & Item Interact ESP Edition)
+-- Check System Integrated Client (Master ESP, NPC HP, Item Interact & Ghost ESP Edition)
 -- Fully Optimized & Fixed Toggle State Control System (v1.94 Patch - Spectate System Edition)
 
 local Players = game:GetService("Players")
@@ -30,11 +30,13 @@ _G.ESPEnabled = false
 _G.ESPShowName = true
 _G.ESPShowItemName = true
 _G.ESPIgnorePlayers = false
-_G.ESPIgnoreNPCs = false
+_G.ESPIgnoreNPCs = true                     -- เปิด Ignore Entities ไว้ก่อน (ใช้ Ghost ESP แทน)
+_G.ESPIgnoreGhosts = false
 _G.ESPIgnoreItems = false
 _G.FriendColor = Color3.fromRGB(160, 90, 255)
 _G.EnemyColor = Color3.fromRGB(255, 60, 60)
 _G.EntityColor = Color3.fromRGB(255, 170, 0)
+_G.GhostColor = Color3.fromRGB(255, 0, 0)
 _G.UseTeamColor = true
 _G.PlayerColor = nil                        -- nil = original behaviour (team / friend / enemy colour)
 _G.ItemColor = Color3.fromRGB(0, 255, 200)  -- original item colour
@@ -126,9 +128,6 @@ RunService.RenderStepped:Connect(function()
     end
 end)
 
--- Unlock First Person
--- Same 5 properties as the standalone snippet, applied immediately on toggle,
--- then re-checked a few times per second (only writes when a value was changed back).
 local function setPlayerProp(name, value)
     local ok, err = pcall(function()
         if player[name] ~= value then
@@ -171,11 +170,11 @@ local function toggleUnlockFirstPerson(state)
     firstPersonLoopToken += 1
 
     if state then
-        applyFirstPersonUnlock()          -- immediate, exactly like the standalone script
+        applyFirstPersonUnlock()
         local myToken = firstPersonLoopToken
         task.spawn(function()
             while myToken == firstPersonLoopToken do
-                task.wait(0.25)           -- re-assert without fighting the game every frame
+                task.wait(0.25)
                 applyFirstPersonUnlock()
             end
         end)
@@ -224,9 +223,9 @@ end
 ----------------------------------------------------
 -- 2.5 Remove Fog & FOV Changer
 ----------------------------------------------------
-local Ext = {}   -- extra feature functions (keeps the number of top-level locals low)
+local Ext = {}
 
-do  -- Remove Fog: Atmosphere / Fog / Blur / DepthOfField / ColorCorrection
+do
     local enabled = false
     local token = 0
     local conns = {}
@@ -284,7 +283,7 @@ do  -- Remove Fog: Atmosphere / Fog / Blur / DepthOfField / ColorCorrection
                 while myToken == token do
                     task.wait(0.5)
                     if myToken ~= token then break end
-                    sweep()   -- catches games that animate fog / atmosphere
+                    sweep()
                 end
             end)
         elseif not state and enabled then
@@ -314,7 +313,7 @@ do  -- Remove Fog: Atmosphere / Fog / Blur / DepthOfField / ColorCorrection
     end
 end
 
-do  -- FOV Changer
+do
     local enabled = false
     local value = 70
     local defaultFov = 70
@@ -479,17 +478,12 @@ end
 
 ----------------------------------------------------
 -- 4.5 Spectate System
---  * Uses the game's own default camera (CameraSubject), so it works
---    even inside games with a custom camera script (unlike Bypass FP,
---    which fully replaces the camera — don't run both at once).
---  * Auto-reconnects when the target respawns, and stops automatically
---    if the target leaves the game.
 ----------------------------------------------------
 local SpectateEnabled = false
-local SpectateTarget = nil       -- Player instance being watched, or nil
-local SpectateSaved = nil        -- { CameraType, CameraSubject } of your own camera
+local SpectateTarget = nil
+local SpectateSaved = nil
 local spectateConns = {}
-local setSpectateTarget          -- forward declaration
+local setSpectateTarget
 
 local function spectateDisconnectAll()
     for _, c in ipairs(spectateConns) do c:Disconnect() end
@@ -508,9 +502,6 @@ local function stopSpectate(restoreCamera)
             end)
         end
         SpectateSaved = nil
-    end
-    if toggleUiUpdaters["Spectate Mode"] then
-        -- don't force the toggle off here; only camera state is reset
     end
 end
 
@@ -585,7 +576,6 @@ local function spectateCycle(step)
     if SpectateUiRefresh then SpectateUiRefresh() end
 end
 
--- Reapply the camera if YOUR OWN character respawns while spectating
 player.CharacterAdded:Connect(function()
     if SpectateEnabled and SpectateTarget then
         task.wait(0.5)
@@ -596,21 +586,65 @@ player.CharacterAdded:Connect(function()
 end)
 
 ----------------------------------------------------
--- 5. Master ESP (Optimized, event-driven)
--- Replaces the old Section 5 (cleanESP, updateESPState and the old task.spawn loop)
+-- 5. Master ESP (Optimized, event-driven & Ghost ESP)
 ----------------------------------------------------
-_G.ESPMaxDistance = _G.ESPMaxDistance or 2000   -- max render distance (studs)
+_G.ESPMaxDistance = _G.ESPMaxDistance or 2000
 
-local ESP_REFRESH_RATE = 0.3     -- seconds per refresh (replaces the full Workspace scan every second)
-local MAX_HIGHLIGHTS   = 30      -- Roblox renders about 31 Highlights at once
+local ESP_REFRESH_RATE = 0.3
+local MAX_HIGHLIGHTS   = 30
 
 local espRunning   = false
 local espToken     = 0
 local espFolder    = nil
-local espTracked   = {}          -- [targetInstance] = entry
+local espTracked   = {}
 local espConns     = {}
 
 local ESPFilter = { enabled = false, set = {} }   -- ESP target filter (key = "Kind|Name")
+
+-- Ghost detection (จาก Ghost ESP)
+local GHOST_KEYWORDS = { "ghost", "monster", "entity", "demon", "killer", "nextbot" }
+local GHOST_ATTRS    = { "monster", "isghost", "entity" }
+
+local function containsAny(str, list)
+    for _, k in ipairs(list) do
+        if string.find(str, k, 1, true) then return true end
+    end
+    return false
+end
+
+local function isInsidePlayerChar(inst)
+    local p = inst
+    while p and p ~= Workspace do
+        if Players:GetPlayerFromCharacter(p) then return true end
+        p = p.Parent
+    end
+    return false
+end
+
+local function ghostMatch(obj)
+    if not (obj:IsA("Model") or obj:IsA("BasePart")) then return false end
+    if isInsidePlayerChar(obj) then return false end
+
+    if obj:IsA("Model") and obj:FindFirstChildOfClass("AnimationController") then
+        return true
+    end
+    if containsAny(string.lower(obj.Name), GHOST_KEYWORDS) then
+        return true
+    end
+    for attr in pairs(obj:GetAttributes()) do
+        if containsAny(string.lower(attr), GHOST_ATTRS) then return true end
+    end
+    return false
+end
+
+local function hasTrackedAncestor(inst)
+    local p = inst.Parent
+    while p and p ~= Workspace do
+        if espTracked[p] then return true end
+        p = p.Parent
+    end
+    return false
+end
 
 local function findPart(target)
     if target:IsA("BasePart") then return target end
@@ -633,7 +667,7 @@ local function removeEntry(target)
     if e.bb then e.bb:Destroy() end
 end
 
-local function createEntry(target, humanoid)
+local function createEntry(target, humanoid, isGhost)
     if espTracked[target] or not espFolder then return end
 
     local hl = Instance.new("Highlight")
@@ -661,12 +695,11 @@ local function createEntry(target, humanoid)
     label.Parent = bb
 
     espTracked[target] = {
-        target = target, hum = humanoid, hl = hl, bb = bb, label = label,
+        target = target, hum = humanoid, ghost = isGhost, hl = hl, bb = bb, label = label,
         part = nil, lastText = "",
     }
 end
 
--- returns target, humanoid (or nil if the instance is not an ESP target)
 local function classifyInstance(inst)
     if inst:IsA("Humanoid") then
         local model = inst.Parent
@@ -687,7 +720,20 @@ end
 
 local function considerInstance(inst)
     local target, hum = classifyInstance(inst)
-    if target then createEntry(target, hum) end
+    if target then
+        createEntry(target, hum)
+        if hum and espTracked[target] and ghostMatch(target) then
+            espTracked[target].ghost = true      -- ผีที่มี Humanoid
+        end
+    end
+
+    if (inst:IsA("Model") or inst:IsA("BasePart")) and ghostMatch(inst) then
+        if espTracked[inst] then
+            espTracked[inst].ghost = true
+        elseif not hasTrackedAncestor(inst) then
+            createEntry(inst, nil, true)
+        end
+    end
 end
 
 local function refreshESP()
@@ -703,7 +749,9 @@ local function refreshESP()
             e.part = (e.part and e.part.Parent and e.part) or findPart(target)
 
             local kind, plr = "Item", nil
-            if e.hum then
+            if e.ghost then
+                kind = "Ghost"
+            elseif e.hum then
                 plr = Players:GetPlayerFromCharacter(target)
                 kind = plr and "Player" or "NPC"
             end
@@ -711,6 +759,7 @@ local function refreshESP()
             local ignored =
                 (kind == "Player" and _G.ESPIgnorePlayers) or
                 (kind == "NPC"    and _G.ESPIgnoreNPCs) or
+                (kind == "Ghost"  and _G.ESPIgnoreGhosts) or
                 (kind == "Item"   and _G.ESPIgnoreItems) or
                 (ESPFilter.enabled and not ESPFilter.set[kind .. "|" .. target.Name]) or
                 plr == player
@@ -727,7 +776,6 @@ local function refreshESP()
         end
     end
 
-    -- nearest first, then cap the number of Highlights
     table.sort(visible, function(a, b) return a.dist < b.dist end)
 
     for i, e in ipairs(visible) do
@@ -738,6 +786,10 @@ local function refreshESP()
                 or ((player.TeamColor == e.plr.TeamColor) and _G.FriendColor or _G.EnemyColor))
             showName = _G.ESPShowName
             text = e.plr.Name
+        elseif e.kind == "Ghost" then
+            color = _G.GhostColor
+            showName = _G.ESPShowName
+            text = "[Entity] " .. e.target.Name
         elseif e.kind == "NPC" then
             color = _G.EntityColor
             showName = _G.ESPShowName
@@ -750,7 +802,7 @@ local function refreshESP()
 
         e.hl.Enabled = i <= MAX_HIGHLIGHTS
         e.hl.FillColor = color
-        e.hl.OutlineColor = (e.kind == "Item") and Color3.new(1, 1, 1) or color
+        e.hl.OutlineColor = (e.kind == "Item" or e.kind == "Ghost") and Color3.new(1, 1, 1) or color
         e.hl.FillTransparency = 1 - _G.ESPFillOpacity
         e.hl.OutlineTransparency = 1 - _G.ESPOutlineOpacity
 
@@ -765,7 +817,7 @@ local function refreshESP()
                 e.bb.Size = UDim2.new(0, 300, 0, size + 8)
             end
             text = string.format("%s [%dm]", text, math.floor(e.dist))
-            if text ~= e.lastText then   -- only write Text when it changed
+            if text ~= e.lastText then
                 e.label.Text = text
                 e.lastText = text
             end
@@ -789,9 +841,8 @@ local function setESPEnabled(state)
 
     espFolder = Instance.new("Folder")
     espFolder.Name = "ESPContainer"
-    espFolder.Parent = camera          -- no more parenting instances into the game's characters/parts
+    espFolder.Parent = camera
 
-    -- Event-driven: only track what is added/removed, no repeated GetDescendants
     table.insert(espConns, Workspace.DescendantAdded:Connect(considerInstance))
     table.insert(espConns, Workspace.DescendantRemoving:Connect(function(inst)
         if espTracked[inst] then
@@ -803,7 +854,6 @@ local function setESPEnabled(state)
 
     local myToken = espToken
     task.spawn(function()
-        -- initial scan in chunks to avoid FPS drops
         local count = 0
         for _, inst in ipairs(Workspace:GetDescendants()) do
             if myToken ~= espToken then return end
@@ -818,7 +868,6 @@ local function setESPEnabled(state)
     end)
 end
 
--- same name as before: every UI toggle already calls this function
 local function updateESPState()
     setESPEnabled(_G.ESPEnabled)
     if espRunning then refreshESP() end
@@ -852,9 +901,7 @@ local ScreenGui = Instance.new("ScreenGui")
 ScreenGui.Name = "CheckSystemMenu"
 ScreenGui.ResetOnSpawn = false
 ScreenGui.DisplayOrder = 999
--- Put the menu where the game's own scripts don't scan for buttons
--- (stops map-made hover/click animations from touching our buttons).
--- Falls back to PlayerGui (old behaviour) if gethui/CoreGui aren't available.
+
 local function mountGui(gui)
     local target
     local okHui, hui = pcall(function() return gethui and gethui() end)
@@ -876,7 +923,6 @@ end
 
 mountGui(ScreenGui)
 
--- No hover/press colour change on our buttons (tab colours are handled manually)
 ScreenGui.DescendantAdded:Connect(function(d)
     if d:IsA("GuiButton") then
         d.AutoButtonColor = false
@@ -921,7 +967,7 @@ Header.Position = UDim2.new(0, 20, 0, 10)
 Header.BackgroundTransparency = 1
 
 local Title = Instance.new("TextLabel", Header)
-Title.Text = "Check System v.1.94"
+Title.Text = "Check System v.2.02"
 Title.Font = Enum.Font.GothamBold
 Title.TextSize = 18
 Title.TextColor3 = TEXT_MAIN
@@ -948,16 +994,6 @@ CloseBtn.Size = UDim2.new(0, 30, 0, 30)
 CloseBtn.Position = UDim2.new(1, -30, 0, 5)
 CloseBtn.BackgroundTransparency = 1
 
-----------------------------------------------------
--- Mouse handling while the menu is open
---  * Menu open  -> the mouse is FREE (works in first person / shiftlock too)
---  * Hold Right Mouse Button while the menu is open -> the game's own camera
---    takes the mouse back so you can LOOK AROUND. Release it -> mouse is free again.
-----------------------------------------------------
--- Invisible Modal button: while MainFrame is visible, Roblox frees the mouse.
--- It stops working automatically when the menu is hidden.
--- Kept in its own tiny ScreenGui inside PlayerGui (Modal is only reliable there),
--- so the menu itself can live in gethui()/CoreGui. It is invisible and 1px.
 local ModalGui = Instance.new("ScreenGui")
 ModalGui.Name = "CheckSystemModal"
 ModalGui.ResetOnSpawn = false
@@ -986,7 +1022,6 @@ local function toggleGuiVisibility()
     updateMouseState()
 end
 
--- Runs right AFTER the camera script each frame.
 RunService:BindToRenderStep("CheckSystemMouseFree", Enum.RenderPriority.Camera.Value + 1, function()
     if not MainFrame.Visible then
         if ModalUnlock.Visible then ModalUnlock.Visible = false end
@@ -996,12 +1031,11 @@ RunService:BindToRenderStep("CheckSystemMouseFree", Enum.RenderPriority.Camera.V
 
     local looking = UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton2)
 
-    -- Modal ON  = mouse free.  Modal OFF (while holding RMB) = camera can rotate.
     if ModalUnlock.Modal == looking then
         ModalUnlock.Modal = not looking
     end
 
-    if looking then return end   -- let the game's camera control the mouse while looking around
+    if looking then return end
 
     if UserInputService.MouseBehavior == Enum.MouseBehavior.LockCenter then
         UserInputService.MouseBehavior = Enum.MouseBehavior.Default
@@ -1012,8 +1046,10 @@ RunService:BindToRenderStep("CheckSystemMouseFree", Enum.RenderPriority.Camera.V
 end)
 
 ----------------------------------------------------
--- Panic Mode (disable every feature + hide the menu, one key)
+-- Panic Mode Declarations
 ----------------------------------------------------
+local toggleControl = {}   -- [title] = { get, set } used by Panic Mode
+
 local Ctl = {
     panicKey = Enum.KeyCode.End,          -- default Panic key
     menuKey = Enum.KeyCode.RightShift,    -- default menu key
@@ -1068,18 +1104,10 @@ end
 
 ----------------------------------------------------
 -- Bypass First Person
--- Own camera for maps whose camera script ignores Roblox's zoom / camera
--- properties (Unlock Camera / Unlock First Person don't work there).
---  * Mouse wheel = zoom: all the way in = first person, out = third person
---  * First person : mouse locked, camera follows the mouse
---  * Third person : hold Right Mouse Button to look around
---  * Menu open    : mouse free; hold Right Mouse Button to look around
---  * Your character is forced visible while this is ON (some maps hide it).
---    Everything is put back exactly as it was when you turn it OFF.
 ----------------------------------------------------
 local bypassYaw, bypassPitch = 0, 0
 local bypassZoom, bypassZoomTarget = 0, 0
-local bypassSaved = setmetatable({}, { __mode = "k" })   -- [instance] = original values
+local bypassSaved = setmetatable({}, { __mode = "k" })
 
 local BODY_PARTS = {
     Head = true, Torso = true,
@@ -1105,7 +1133,6 @@ local function bypassSave(inst)
     end
 end
 
--- Make a body part visible (or, in first person, hide it locally so it can't block the view)
 local function bypassShowPart(part, hidden)
     bypassSave(part)
     pcall(function()
@@ -1135,7 +1162,6 @@ local function bypassUpdateVisuals(char, head, firstPerson)
     end
 end
 
--- Put every property we touched back to what it was before
 local function bypassRestore()
     for inst, saved in pairs(bypassSaved) do
         if inst.Parent then
@@ -1178,7 +1204,6 @@ local function toggleBypassFirstPerson(state)
     end
 end
 
--- Mouse wheel zoom (ignored while the cursor is over the menu or another GUI)
 UserInputService.InputChanged:Connect(function(input, gpe)
     if gpe or not BypassFPEnabled then return end
     if input.UserInputType == Enum.UserInputType.MouseWheel then
@@ -1188,7 +1213,6 @@ UserInputService.InputChanged:Connect(function(input, gpe)
     end
 end)
 
--- Runs after the mouse-free step above, so it has the final say on the mouse
 RunService:BindToRenderStep("CheckSystemBypassFP", Enum.RenderPriority.Camera.Value + 2, function(dt)
     if not BypassFPEnabled then return end
 
@@ -1201,18 +1225,17 @@ RunService:BindToRenderStep("CheckSystemBypassFP", Enum.RenderPriority.Camera.Va
         cam.CameraType = Enum.CameraType.Scriptable
     end
 
-    -- smooth zoom
     bypassZoomTarget = math.min(bypassZoomTarget, BypassMaxZoom)
     bypassZoom = bypassZoom + (bypassZoomTarget - bypassZoom) * (1 - math.exp(-dt * 14))
     if math.abs(bypassZoom - bypassZoomTarget) < 0.02 then bypassZoom = bypassZoomTarget end
 
-    local firstPersonView = bypassZoom < 1.5        -- what we draw
-    local firstPersonMouse = bypassZoomTarget < 1.5 -- how the mouse behaves
+    local firstPersonView = bypassZoom < 1.5
+    local firstPersonMouse = bypassZoomTarget < 1.5
 
     local menuOpen = MainFrame.Visible
     local rmb = UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton2)
     local rotating = rmb or (firstPersonMouse and not menuOpen)
-    if UserInputService:GetFocusedTextBox() then rotating = false end   -- typing in chat / a box
+    if UserInputService:GetFocusedTextBox() then rotating = false end
 
     if rotating then
         UserInputService.MouseBehavior = (firstPersonMouse and not menuOpen)
@@ -1228,7 +1251,6 @@ RunService:BindToRenderStep("CheckSystemBypassFP", Enum.RenderPriority.Camera.Va
 
     bypassUpdateVisuals(char, head, firstPersonView)
 
-    -- camera: focus on the head, pull back by the zoom distance (0.6 in front of the head at zoom 0)
     local rot = CFrame.fromOrientation(bypassPitch, bypassYaw, 0)
     local focus = head.Position
     local back = -rot.LookVector
@@ -1244,14 +1266,12 @@ RunService:BindToRenderStep("CheckSystemBypassFP", Enum.RenderPriority.Camera.Va
 end)
 
 ----------------------------------------------------
--- Cursor overlay
--- Some maps hide / move the real cursor. While the menu is open we draw our own
--- (only when "Show Cursor" is on, and hidden while you hold RMB to look around).
+-- Cursor Overlay
 ----------------------------------------------------
 local CursorGui = Instance.new("ScreenGui")
 CursorGui.Name = "CheckSystemCursor"
 CursorGui.ResetOnSpawn = false
-CursorGui.IgnoreGuiInset = true      -- so it matches GetMouseLocation exactly
+CursorGui.IgnoreGuiInset = true
 CursorGui.DisplayOrder = 1000
 mountGui(CursorGui)
 
@@ -1375,14 +1395,11 @@ addTabButton("Settings")
 addTabButton("Spectate")
 addTabButton("Config")
 
--- Config registry: every toggle / input / keybind / hex box registers itself here
 local configEntries = {}
 local function registerConfig(key, getter, setter)
     configEntries[#configEntries + 1] = { key = key, get = getter, set = setter }
 end
-local loadDefaultConfig = function() end   -- assigned by the Config System section
 
-local toggleControl = {}   -- [title] = { get, set } used by Panic Mode
 local function addToggle(parent, title, desc, default, callback, noConfig)
     local card = Instance.new("Frame", parent)
     card.Size = UDim2.new(1, -10, 0, 50)
@@ -1448,7 +1465,7 @@ local function addToggle(parent, title, desc, default, callback, noConfig)
         set = function(v) if v ~= state then setState(v, false) end end,
     }
 
-    if noConfig then return end   -- e.g. Panic Mode is never saved in a config
+    if noConfig then return end
 
     registerConfig(parent.Name .. "/" .. title,
         function() return state end,
@@ -1526,7 +1543,6 @@ local function addInput(parent, title, desc, defaultVal, callback, sliderMin, sl
         knob.ZIndex = 2
         Instance.new("UICorner", knob).CornerRadius = UDim.new(0, 7)
 
-        -- larger invisible hit area so the thin track is easy to grab
         local hit = Instance.new("TextButton", card)
         hit.Text = ""
         hit.AutoButtonColor = false
@@ -1575,7 +1591,6 @@ local function addInput(parent, title, desc, defaultVal, callback, sliderMin, sl
         end)
     end
 
-    -- Typing a number still works exactly as before (no clamping to the slider range)
     input.FocusLost:Connect(function()
         local val = tonumber(input.Text)
         if val then
@@ -1646,7 +1661,6 @@ local function addKeybind(parent, title, desc, defaultKey, callback)
         bindBtn.Text = "..."
         listening = true
         KeybindListening = true
-        -- safety: stop listening after 5s so hotkeys never stay blocked
         task.delay(5, function()
             if listening then
                 listening = false
@@ -1659,7 +1673,6 @@ local function addKeybind(parent, title, desc, defaultKey, callback)
     UserInputService.InputBegan:Connect(function(input)
         if listening and input.UserInputType == Enum.UserInputType.Keyboard then
             listening = false
-            -- release the flag after this input event so hotkeys don't fire while binding
             task.defer(function() KeybindListening = false end)
             local key = input.KeyCode
             if key == Enum.KeyCode.Backspace or key == Enum.KeyCode.Escape then
@@ -1701,7 +1714,6 @@ local function toHex(c)
         math.floor(c.B * 255 + 0.5))
 end
 
--- Empty box -> callback(nil) (caller falls back to the original colour)
 local function addHexInput(parent, title, desc, defaultHex, callback, placeholder)
     local card = Instance.new("Frame", parent)
     card.Size = UDim2.new(1, -10, 0, 50)
@@ -1775,7 +1787,7 @@ local function addHexInput(parent, title, desc, defaultHex, callback, placeholde
             setPreview(color)
             callback(color)
         else
-            input.Text = lastText   -- invalid HEX: revert
+            input.Text = lastText
         end
     end
 
@@ -1809,7 +1821,7 @@ local function addButton(parent, title, callback)
 end
 
 ----------------------------------------------------
--- Hotkey-friendly toggle helpers (keep the UI switch in sync)
+-- Hotkey-friendly toggle helpers
 ----------------------------------------------------
 local function setAutoTeleport(state)
     autoTpEnabled = state
@@ -1859,14 +1871,13 @@ addKeybind(espPage, "Master ESP Keybind", "Press key to toggle Master ESP", nil,
 addInput(espPage, "ESP Max Distance", "Max ESP render distance (studs)", _G.ESPMaxDistance, function(v) _G.ESPMaxDistance = v end, 50, 10000, 50)
 
 do  -- ESP Target Filter: pick exactly which entities / items / players to show
-    local scanResult = { Player = {}, NPC = {}, Item = {} }   -- [kind][name] = count
-    local KIND_ORDER = { "NPC", "Item", "Player" }
-    local KIND_LABEL = { NPC = "ENTITIES (NPC)", Item = "ITEMS / INTERACTABLES", Player = "PLAYERS" }
+    local scanResult = { Ghost = {}, Player = {}, NPC = {}, Item = {} }   -- [kind][name] = count
+    local KIND_ORDER = { "Ghost", "NPC", "Item", "Player" }
+    local KIND_LABEL = { Ghost = "GHOSTS", NPC = "ENTITIES (NPC)", Item = "ITEMS / INTERACTABLES", Player = "PLAYERS" }
     local searchText = ""
     local scanToken = 0
     local visibleKeys = {}
 
-    -- side window (left of the menu)
     local frame = Instance.new("Frame", MainFrame)
     frame.Name = "ESPTargetList"
     frame.Size = UDim2.new(0, 230, 1, -85)
@@ -1941,7 +1952,6 @@ do  -- ESP Target Filter: pick exactly which entities / items / players to show
         local order = 0
 
         for _, kind in ipairs(KIND_ORDER) do
-            -- names found in the scan + names selected earlier (e.g. from a loaded config)
             local names, seen = {}, {}
             for name in pairs(scanResult[kind]) do
                 seen[name] = true
@@ -2020,17 +2030,30 @@ do  -- ESP Target Filter: pick exactly which entities / items / players to show
         end
     end
 
-    -- Scan the map for targets (chunked so it doesn't freeze the game)
     local function scan()
         scanToken += 1
         local my = scanToken
         titleLbl.Text = "Scanning..."
         task.spawn(function()
-            local result = { Player = {}, NPC = {}, Item = {} }
+            local result = { Ghost = {}, Player = {}, NPC = {}, Item = {} }
             local seenTargets = {}
             local n = 0
             for _, inst in ipairs(Workspace:GetDescendants()) do
                 if my ~= scanToken then return end
+
+                if (inst:IsA("Model") or inst:IsA("BasePart")) and not seenTargets[inst] and ghostMatch(inst) then
+                    local dup = false
+                    local p = inst.Parent
+                    while p and p ~= Workspace do
+                        if seenTargets[p] then dup = true break end
+                        p = p.Parent
+                    end
+                    if not dup then
+                        seenTargets[inst] = true
+                        result.Ghost[inst.Name] = (result.Ghost[inst.Name] or 0) + 1
+                    end
+                end
+
                 local target, hum = classifyInstance(inst)
                 if target and not seenTargets[target] then
                     seenTargets[target] = true
@@ -2065,7 +2088,6 @@ do  -- ESP Target Filter: pick exactly which entities / items / players to show
         updateESPState()
     end)
 
-    -- controls on the ESP page
     addToggle(espPage, "ESP Filter", "Only show targets selected in the Target List", false, function(s)
         ESPFilter.enabled = s
         updateESPState()
@@ -2074,7 +2096,7 @@ do  -- ESP Target Filter: pick exactly which entities / items / players to show
         frame.Visible = not frame.Visible
         if frame.Visible then
             render()
-            if next(scanResult.NPC) == nil and next(scanResult.Item) == nil and next(scanResult.Player) == nil then
+            if next(scanResult.Ghost) == nil and next(scanResult.NPC) == nil and next(scanResult.Item) == nil and next(scanResult.Player) == nil then
                 scan()
             end
         end
@@ -2084,7 +2106,6 @@ do  -- ESP Target Filter: pick exactly which entities / items / players to show
         scan()
     end)
 
-    -- save / load the selection inside configs
     registerConfig("ESP/FilterSelection",
         function()
             local t = {}
@@ -2110,11 +2131,13 @@ addToggle(espPage, "Show Item Names", "Show name and distance tag on items/inter
 addInput(espPage, "Item Names Text Size", "Text size of item tags", _G.ESPItemTextSize, function(v) _G.ESPItemTextSize = math.clamp(v, 1, 100) end, 8, 32, 1)
 
 addToggle(espPage, "Ignore Players", "Do not highlight real players", false, function(s) _G.ESPIgnorePlayers = s; updateESPState() end)
-addToggle(espPage, "Ignore Entities", "Do not highlight NPCs/Ghosts", false, function(s) _G.ESPIgnoreNPCs = s; updateESPState() end)
+addToggle(espPage, "Ignore Entities", "Hide humanoid NPCs (Ghost ESP has its own toggle)", true, function(s) _G.ESPIgnoreNPCs = s; updateESPState() end)
+addToggle(espPage, "Ignore Ghosts", "Do not highlight ghosts / monsters (Ghost ESP)", false, function(s) _G.ESPIgnoreGhosts = s; updateESPState() end)
 addToggle(espPage, "Ignore Items", "Do not highlight items/interactables", false, function(s) _G.ESPIgnoreItems = s; updateESPState() end)
 
 addHexInput(espPage, "Players Color (HEX)", "Empty = original team color. Also colors the tag", "", function(c) _G.PlayerColor = c; updateESPState() end, "TEAM")
 addHexInput(espPage, "Entities Color (HEX)", "Empty = original color. Also colors the tag", toHex(_G.EntityColor), function(c) _G.EntityColor = c or Color3.fromRGB(255, 170, 0); updateESPState() end, "FFAA00")
+addHexInput(espPage, "Ghost Color (HEX)", "Empty = original red. Also colors the tag", toHex(_G.GhostColor), function(c) _G.GhostColor = c or Color3.fromRGB(255, 0, 0); updateESPState() end, "FF0000")
 addHexInput(espPage, "Items Color (HEX)", "Empty = original color. Also colors the tag", toHex(_G.ItemColor), function(c) _G.ItemColor = c or Color3.fromRGB(0, 255, 200); updateESPState() end, "00FFC8")
 
 addInput(espPage, "ESP Fill Opacity", "Highlight fill (0 = clear, 1 = solid)", _G.ESPFillOpacity, function(v) _G.ESPFillOpacity = math.clamp(v, 0, 1) end, 0, 1, 0.05)
@@ -2134,7 +2157,7 @@ addButton(tpPage, "Teleport to Saved Position", function()
     end
 end)
 
-do  -- Spectate UI: toggle + specific player picker + cycle + refresh
+do
     local rows = {}
 
     addToggle(spectatePage, "Spectate Mode", "Watch another player through their camera", false, function(s)
@@ -2255,7 +2278,6 @@ do  -- Spectate UI: toggle + specific player picker + cycle + refresh
     Players.PlayerAdded:Connect(rebuildSpectateList)
     Players.PlayerRemoving:Connect(function() task.defer(rebuildSpectateList) end)
 
-    -- lets spectateCycle() refresh the highlighted row after Next/Previous
     SpectateUiRefresh = function()
         for _, p in pairs(rows) do p() end
     end
@@ -2338,7 +2360,7 @@ addButton(tpPage, "Toggle Player List Window", function()
     PlayerListFrame.Visible = not PlayerListFrame.Visible
     if PlayerListFrame.Visible then refreshPlayers() end
 end)
-
+    
 addToggle(sysPage, "NoClip", "Walk through walls", false, function(s) 
     toggleNoclip(s)
 end)
@@ -2348,442 +2370,4 @@ addToggle(sysPage, "Enable Flight", "Fly freely across map", false, function(s)
     toggleFlight(s) 
 end)
 addKeybind(sysPage, "Flight Keybind", "Press key to toggle Flight", nil, function(k) FlightKey = k end)
-addInput(sysPage, "Fly Speed", "Speed of flight movement", FlySpeed, function(v) FlySpeed = v end, 1, 500, 1)
-
-----------------------------------------------------
--- 8. Config System (Save / Overwrite / Load / Set Default)
-----------------------------------------------------
-do
-    local HttpService = game:GetService("HttpService")
-
-    local CONFIG_DIR = "CheckSystem"
-    local CONFIG_FOLDER = CONFIG_DIR .. "/Configs"
-    local DEFAULT_FILE = CONFIG_DIR .. "/default.txt"
-
-    local hasFS = (writefile and readfile and isfile and isfolder and makefolder and listfiles) ~= nil
-    local memConfigs, memDefault = {}, nil   -- fallback when the executor has no file access
-
-    local selected = nil
-
-    ------------------------------------------------
-    -- Storage
-    ------------------------------------------------
-    local function ensureFolders()
-        if not hasFS then return end
-        pcall(function()
-            if not isfolder(CONFIG_DIR) then makefolder(CONFIG_DIR) end
-            if not isfolder(CONFIG_FOLDER) then makefolder(CONFIG_FOLDER) end
-        end)
-    end
-
-    local function sanitizeName(n)
-        n = tostring(n or "")
-        n = n:gsub("[^%w%s_%-]", "")
-        n = n:gsub("^%s+", "")
-        n = n:gsub("%s+$", "")
-        return n:sub(1, 32)
-    end
-
-    local function configPath(name)
-        return CONFIG_FOLDER .. "/" .. name .. ".json"
-    end
-
-    local function configExists(name)
-        if hasFS then
-            local ok, res = pcall(isfile, configPath(name))
-            return ok and res == true
-        end
-        return memConfigs[name] ~= nil
-    end
-
-    local function listConfigs()
-        local names = {}
-        if hasFS then
-            ensureFolders()
-            local ok, files = pcall(listfiles, CONFIG_FOLDER)
-            if ok and type(files) == "table" then
-                for _, f in ipairs(files) do
-                    local n = tostring(f):match("([^/\\]+)%.json$")
-                    if n then names[#names + 1] = n end
-                end
-            end
-        else
-            for n in pairs(memConfigs) do names[#names + 1] = n end
-        end
-        table.sort(names, function(a, b) return a:lower() < b:lower() end)
-        return names
-    end
-
-    local function writeConfig(name, data)
-        local okEnc, json = pcall(function() return HttpService:JSONEncode(data) end)
-        if not okEnc then return false, "Could not encode settings" end
-        if hasFS then
-            ensureFolders()
-            local ok, err = pcall(writefile, configPath(name), json)
-            return ok, err
-        end
-        memConfigs[name] = json
-        return true
-    end
-
-    local function readConfig(name)
-        local raw
-        if hasFS then
-            local ok, res = pcall(readfile, configPath(name))
-            if not ok then return nil, "Could not read the config file" end
-            raw = res
-        else
-            raw = memConfigs[name]
-        end
-        if not raw then return nil, "Config not found" end
-        local ok, data = pcall(function() return HttpService:JSONDecode(raw) end)
-        if not ok or type(data) ~= "table" then return nil, "Config file is corrupted" end
-        return data
-    end
-
-    local function getDefault()
-        if hasFS then
-            local ok, name = pcall(function()
-                if isfile(DEFAULT_FILE) then return readfile(DEFAULT_FILE) end
-                return nil
-            end)
-            if ok and type(name) == "string" then
-                name = sanitizeName(name)
-                if name ~= "" and configExists(name) then return name end
-            end
-            return nil
-        end
-        if memDefault and configExists(memDefault) then return memDefault end
-        return nil
-    end
-
-    local function setDefault(name)
-        if hasFS then
-            ensureFolders()
-            local ok, err = pcall(writefile, DEFAULT_FILE, name)
-            return ok, err
-        end
-        memDefault = name
-        return true
-    end
-
-    ------------------------------------------------
-    -- Collect / apply settings
-    ------------------------------------------------
-    local function collectSettings()
-        local values = {}
-        for _, e in ipairs(configEntries) do
-            local ok, v = pcall(e.get)
-            if ok and v ~= nil then values[e.key] = v end
-        end
-        return { version = 1, values = values }
-    end
-
-    local function applySettings(data)
-        local values = data and data.values
-        if type(values) ~= "table" then return false end
-        for _, e in ipairs(configEntries) do
-            local v = values[e.key]
-            if v ~= nil then
-                local ok, err = pcall(e.set, v)
-                if not ok then
-                    warn("[Check System] Failed to apply '" .. e.key .. "': " .. tostring(err))
-                end
-            end
-        end
-        return true
-    end
-
-    ------------------------------------------------
-    -- UI
-    ------------------------------------------------
-    local function makeCard(height)
-        local card = Instance.new("Frame", configPage)
-        card.Size = UDim2.new(1, -10, 0, height)
-        card.BackgroundColor3 = PURPLE_CARD
-        card.BackgroundTransparency = 0.2
-        card.BorderSizePixel = 0
-        Instance.new("UICorner", card).CornerRadius = UDim.new(0, 8)
-        return card
-    end
-
-    -- Card 1: Save As New Config
-    local card1 = makeCard(50)
-
-    local newBox = Instance.new("TextBox", card1)
-    newBox.Size = UDim2.new(1, -120, 0, 30)
-    newBox.Position = UDim2.new(0, 10, 0, 10)
-    newBox.PlaceholderText = "New config name..."
-    newBox.PlaceholderColor3 = TEXT_SUB
-    newBox.Text = ""
-    newBox.Font = Enum.Font.Gotham
-    newBox.TextSize = 12
-    newBox.TextColor3 = TEXT_MAIN
-    newBox.BackgroundColor3 = PURPLE_DARK
-    newBox.ClearTextOnFocus = false
-    Instance.new("UICorner", newBox).CornerRadius = UDim.new(0, 6)
-
-    local saveBtn = Instance.new("TextButton", card1)
-    saveBtn.Size = UDim2.new(0, 90, 0, 30)
-    saveBtn.Position = UDim2.new(1, -100, 0, 10)
-    saveBtn.Text = "Save New"
-    saveBtn.Font = Enum.Font.GothamBold
-    saveBtn.TextSize = 12
-    saveBtn.TextColor3 = TEXT_MAIN
-    saveBtn.BackgroundColor3 = PURPLE_PRIMARY
-    Instance.new("UICorner", saveBtn).CornerRadius = UDim.new(0, 6)
-
-    -- Card 2: Saved Configs List
-    local card2 = makeCard(200)
-
-    local listTitle = Instance.new("TextLabel", card2)
-    listTitle.Text = "Saved Configs"
-    listTitle.Font = Enum.Font.GothamBold
-    listTitle.TextSize = 13
-    listTitle.TextColor3 = TEXT_MAIN
-    listTitle.Position = UDim2.new(0, 12, 0, 8)
-    listTitle.Size = UDim2.new(0, 200, 0, 16)
-    listTitle.TextXAlignment = Enum.TextXAlignment.Left
-    listTitle.BackgroundTransparency = 1
-
-    local scroll = Instance.new("ScrollingFrame", card2)
-    scroll.Size = UDim2.new(1, -16, 1, -34)
-    scroll.Position = UDim2.new(0, 8, 0, 28)
-    scroll.BackgroundTransparency = 1
-    scroll.BorderSizePixel = 0
-    scroll.ScrollBarThickness = 3
-    scroll.ScrollBarImageColor3 = PURPLE_PRIMARY
-    scroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
-    scroll.CanvasSize = UDim2.new(0, 0, 0, 0)
-
-    local scrollLayout = Instance.new("UIListLayout", scroll)
-    scrollLayout.Padding = UDim.new(0, 4)
-
-    -- Card 3: Selected Config Controls
-    local card3 = makeCard(100)
-
-    local selTitle = Instance.new("TextLabel", card3)
-    selTitle.Text = "Selected: None"
-    selTitle.Font = Enum.Font.GothamBold
-    selTitle.TextSize = 12
-    selTitle.TextColor3 = TEXT_SUB
-    selTitle.Position = UDim2.new(0, 12, 0, 8)
-    selTitle.Size = UDim2.new(1, -24, 0, 16)
-    selTitle.TextXAlignment = Enum.TextXAlignment.Left
-    selTitle.BackgroundTransparency = 1
-
-    local function makeBtn(parent, text, pos, size, bg)
-        local b = Instance.new("TextButton", parent)
-        b.Text = text
-        b.Font = Enum.Font.GothamBold
-        b.TextSize = 11
-        b.TextColor3 = TEXT_MAIN
-        b.BackgroundColor3 = bg
-        b.Position = pos
-        b.Size = size
-        Instance.new("UICorner", b).CornerRadius = UDim.new(0, 6)
-        return b
-    end
-
-    local loadBtn     = makeBtn(card3, "Load",      UDim2.new(0, 10,  0, 32), UDim2.new(0.23, -6, 0, 28), PURPLE_PRIMARY)
-    local overwriteBtn= makeBtn(card3, "Overwrite", UDim2.new(0.23, 8, 0, 32), UDim2.new(0.27, -6, 0, 28), PURPLE_CARD)
-    local defaultBtn  = makeBtn(card3, "Set Default",UDim2.new(0.50, 6, 0, 32), UDim2.new(0.27, -6, 0, 28), PURPLE_CARD)
-    local deleteBtn   = makeBtn(card3, "Delete",   UDim2.new(0.77, 4, 0, 32), UDim2.new(0.23, -6, 0, 28), Color3.fromRGB(150, 40, 60))
-
-    local statusLbl = Instance.new("TextLabel", card3)
-    statusLbl.Text = ""
-    statusLbl.Font = Enum.Font.Gotham
-    statusLbl.TextSize = 10
-    statusLbl.TextColor3 = PURPLE_ACCENT
-    statusLbl.Position = UDim2.new(0, 12, 0, 68)
-    statusLbl.Size = UDim2.new(1, -24, 0, 20)
-    statusLbl.TextXAlignment = Enum.TextXAlignment.Left
-    statusLbl.BackgroundTransparency = 1
-
-    local function setStatus(msg, isErr)
-        statusLbl.TextColor3 = isErr and Color3.fromRGB(255, 90, 90) or PURPLE_ACCENT
-        statusLbl.Text = msg
-        task.delay(4, function()
-            if statusLbl.Text == msg then statusLbl.Text = "" end
-        end)
-    end
-
-    local rebuildList   -- forward declaration
-
-    local function setSelected(name)
-        selected = name
-        local def = getDefault()
-        if not selected then
-            selTitle.Text = "Selected: None"
-        elseif selected == def then
-            selTitle.Text = "Selected: " .. selected .. "  (DEFAULT)"
-        else
-            selTitle.Text = "Selected: " .. selected
-        end
-        rebuildList()
-    end
-
-    rebuildList = function()
-        for _, child in ipairs(scroll:GetChildren()) do
-            if not child:IsA("UIListLayout") then child:Destroy() end
-        end
-
-        local names = listConfigs()
-        local def = getDefault()
-
-        if #names == 0 then
-            local empty = Instance.new("TextLabel", scroll)
-            empty.Size = UDim2.new(1, 0, 0, 30)
-            empty.BackgroundTransparency = 1
-            empty.Font = Enum.Font.Gotham
-            empty.TextSize = 11
-            empty.TextColor3 = TEXT_SUB
-            empty.Text = "No saved configs found."
-            return
-        end
-
-        for _, name in ipairs(names) do
-            local item = Instance.new("TextButton", scroll)
-            item.Size = UDim2.new(1, 0, 0, 28)
-            item.Font = Enum.Font.GothamBold
-            item.TextSize = 11
-            item.TextXAlignment = Enum.TextXAlignment.Left
-            item.AutoButtonColor = false
-
-            local tag = (name == def) and "  [DEFAULT]" or ""
-            item.Text = "   " .. name .. tag
-
-            local isSel = (name == selected)
-            item.BackgroundColor3 = isSel and PURPLE_PRIMARY or PURPLE_DARK
-            item.TextColor3 = isSel and TEXT_MAIN or TEXT_SUB
-            Instance.new("UICorner", item).CornerRadius = UDim.new(0, 6)
-
-            item.MouseButton1Click:Connect(function()
-                setSelected(name)
-            end)
-        end
-    end
-
-    saveBtn.MouseButton1Click:Connect(function()
-        local name = sanitizeName(newBox.Text)
-        if name == "" then
-            setStatus("Enter a valid config name", true)
-            return
-        end
-        local ok, err = writeConfig(name, collectSettings())
-        if ok then
-            newBox.Text = ""
-            setSelected(name)
-            setStatus("Saved config '" .. name .. "'")
-        else
-            setStatus("Save failed: " .. tostring(err), true)
-        end
-    end)
-
-    loadBtn.MouseButton1Click:Connect(function()
-        if not selected then setStatus("Select a config first", true); return end
-        local data, err = readConfig(selected)
-        if data then
-            applySettings(data)
-            setStatus("Loaded '" .. selected .. "'")
-        else
-            setStatus("Load failed: " .. tostring(err), true)
-        end
-    end)
-
-    overwriteBtn.MouseButton1Click:Connect(function()
-        if not selected then setStatus("Select a config first", true); return end
-        local ok, err = writeConfig(selected, collectSettings())
-        if ok then
-            setStatus("Overwrote '" .. selected .. "'")
-        else
-            setStatus("Overwrite failed: " .. tostring(err), true)
-        end
-    end)
-
-    defaultBtn.MouseButton1Click:Connect(function()
-        if not selected then setStatus("Select a config first", true); return end
-        setDefault(selected)
-        setSelected(selected)
-        setStatus("Set '" .. selected .. "' as default")
-    end)
-
-    deleteBtn.MouseButton1Click:Connect(function()
-        if not selected then setStatus("Select a config first", true); return end
-        local target = selected
-        if hasFS then
-            pcall(delfile, configPath(target))
-            if getDefault() == target then pcall(delfile, DEFAULT_FILE) end
-        else
-            memConfigs[target] = nil
-            if memDefault == target then memDefault = nil end
-        end
-        setSelected(nil)
-        setStatus("Deleted '" .. target .. "'")
-    end)
-
-    loadDefaultConfig = function()
-        local def = getDefault()
-        if def then
-            local data = readConfig(def)
-            if data then applySettings(data) end
-        end
-    end
-
-    setSelected(getDefault())
-end
-
--- Auto-load default config on startup
-task.spawn(loadDefaultConfig)
-
-----------------------------------------------------
--- 9. Keybind Listener & Menu Hotkeys
-----------------------------------------------------
-UserInputService.InputBegan:Connect(function(input, gpe)
-    if KeybindListening then return end
-
-    -- Panic Mode hotkey (works even while typing / in gpe)
-    if Ctl.panicKey and input.KeyCode == Ctl.panicKey then
-        setPanicMode(not Ctl.panicActive)
-        return
-    end
-
-    if Ctl.panicActive then return end   -- all other hotkeys blocked during Panic
-    if gpe then return end
-
-    if Ctl.menuKey and input.KeyCode == Ctl.menuKey then
-        toggleGuiVisibility()
-    end
-    if AutoTpKey and input.KeyCode == AutoTpKey then
-        setAutoTeleport(not autoTpEnabled)
-    end
-    if FullbrightKey and input.KeyCode == FullbrightKey then
-        toggleFullbright(not FullbrightEnabled)
-    end
-    if MasterESPKey and input.KeyCode == MasterESPKey then
-        setMasterESP(not _G.ESPEnabled)
-    end
-    if FirstPersonKey and input.KeyCode == FirstPersonKey then
-        toggleUnlockFirstPerson(not UnlockFirstPersonEnabled)
-    end
-    if BypassFPKey and input.KeyCode == BypassFPKey then
-        toggleBypassFirstPerson(not BypassFPEnabled)
-    end
-    if NoclipKey and input.KeyCode == NoclipKey then
-        toggleNoclip(not NoclipState)
-    end
-    if FlightKey and input.KeyCode == FlightKey then
-        toggleFlight(not FlightState)
-    end
-
-    if SpectateToggleKey and input.KeyCode == SpectateToggleKey then
-        toggleUiUpdaters["Spectate Mode"](not SpectateEnabled)
-        toggleSpectate(not SpectateEnabled)
-    end
-    if SpectateNextKey and input.KeyCode == SpectateNextKey then
-        spectateCycle(1)
-    end
-    if SpectatePrevKey and input.KeyCode == SpectatePrevKey then
-        spectateCycle(-1)
-    end
-end)
+addInput(sysPage, "Fly Speed", "Speed of flight movement", FlySpeed, function(v) FlySpeed = v end)
